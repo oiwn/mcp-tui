@@ -1,7 +1,7 @@
-# Current Task Context: mcpv foundation
+# Current Task Context: http client lifecycle
 
-Active task: specs/tasks/0001-mcpv-foundation.md
+Active task: specs/tasks/0002-http-client-lifecycle.md
 
 ## Next
 
-Await user acceptance of task 0001; implementation, verification, and review are complete.
+Await acceptance of task 0002 and prerequisite task 0009; both are implemented, verified, and reviewed.

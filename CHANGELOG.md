@@ -8,3 +8,8 @@ Completed tasks, newest entry at the top, dated. `specdev task done` adds an ent
 - what shipped
 - files touched / decisions locked
 -->
+
+## 2026-10-14 — mcpv foundation
+
+- Replace the database project with the mcpv Rust foundation.
+- Task `0001-mcpv-foundation`; source: User mcpv MVP brief; Rust 2024 and toolchain 1.99

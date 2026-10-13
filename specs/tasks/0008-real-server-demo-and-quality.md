@@ -10,7 +10,7 @@ depends: [0002-http-client-lifecycle, 0003-terminal-shell-and-status, 0004-serve
 
 ## Plan
 
-- [ ] Provide a deterministic real rmcp Streamable HTTP dev-server fixture with a {} success tool, rejected-argument content failure (is_error Some(true)), and stateless mode; keep server dependencies dev-only.
+- [ ] Reuse the dev-server fixture delivered by task 0009 for the final demo; make only scoped fixture adjustments needed by acceptance findings.
 - [ ] Run focused HTTP integration tests for handshake/catalog, success/content failure, stop/request failure, restart/reconnect, and missing Mcp-Session-Id.
 - [ ] Run all quality gates on toolchain 1.99.0, review typed errors and unwrap/expect usage, and record reproducible live TUI demo evidence in docs/demo.md.
 - [ ] Update README launch/key/error/demo instructions; fix any findings through scoped revisions.

@@ -1,6 +1,6 @@
 ---
 id: 0001-mcpv-foundation
-status: approval
+status: done
 scope: [Cargo.toml, Cargo.lock, rust-toolchain.toml, src/**, tmp/legacy-redb/**, README.md, .gitignore, notes.org, redb_tui.png]
 created: 2026-10-13
 source: User mcpv MVP brief; Rust 2024 and toolchain 1.99
@@ -55,3 +55,5 @@ Approved against the plan and declared scope. Three CLI tests pass; executable s
 - 2026-10-14 advance in-progress/implement → in-progress/verify
 - 2026-10-14 advance in-progress/verify → in-progress/review
 - 2026-10-14 advance in-progress/review → approval
+- 2026-10-14 approved: looks good
+- 2026-10-14 advance approval → done
