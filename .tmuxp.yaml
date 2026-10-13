@@ -1,29 +1,29 @@
-session_name: redb-tui
-shell_command_before: "export RUST_LOG=info; clear"
+session_name: mcp-tui
+environment:
+  RUST_LOG: info
+shell_command_before: "clear"
 windows:
   - window_name: code
     focus: true
     start-directory: ./
     panes:
       - shell_command:
-        - helix
+        - hx
+  - window_name: agent
+    start-directory: ./
+    panes:
+      - shell_command:
+        - echo "run agent there"
   - window_name: cmd1
     start-directory: ./
     panes:
       - shell_command:
-        - clear
+        - eza --long
   - window_name: cmd2
-    start-directory: ./
     panes:
       - shell_command:
-        - clear
-  - window_name: notes
+        - eza --long
+  - window_name: yazi
     panes:
       - shell_command:
-        - clear
-        - emacs -nw notes.org
-  - window_name: cmd3
-    panes:
-      - shell_command:
-          - clear
-  
+        - eza --long
