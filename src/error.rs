@@ -4,6 +4,8 @@ use thiserror::Error;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Operation {
+    ReadArguments,
+    CallTool,
     Initialize,
     ListTools,
     Shutdown,
@@ -15,6 +17,8 @@ impl std::fmt::Display for Operation {
             formatter,
             "{}",
             match self {
+                Self::ReadArguments => "argument input",
+                Self::CallTool => "tool call",
                 Self::Initialize => "initialization",
                 Self::ListTools => "tool listing",
                 Self::Shutdown => "shutdown",
@@ -25,6 +29,30 @@ impl std::fmt::Display for Operation {
 
 #[derive(Debug, Error)]
 pub enum AppError {
+    #[error("invalid JSON arguments: {0}")]
+    ArgumentJson(#[source] serde_json::Error),
+    #[error("arguments must be a JSON object")]
+    ArgumentRoot,
+    #[error("arguments exceed the 1 MiB input limit")]
+    ArgumentSize,
+    #[error("argument reader channel closed")]
+    ArgumentReaderClosed,
+    #[error("tool not found: {0}")]
+    ToolNotFound(String),
+    #[error("server does not advertise tools support")]
+    ToolsUnsupported,
+    #[error("tool reported a content failure")]
+    ToolContent,
+    #[error("interrupted")]
+    Interrupted,
+    #[error("JSON serialization failed: {0}")]
+    Serialization(#[from] serde_json::Error),
+    #[error("mcpv requires interactive stdin and stdout terminals")]
+    TerminalRequired,
+    #[error("terminal is not initialized")]
+    TerminalInactive,
+    #[error("terminal input stream closed")]
+    InputClosed,
     #[error("invalid server URL: {0}")]
     Url(#[from] url::ParseError),
     #[error("server URL must use HTTP or HTTPS and include a host")]

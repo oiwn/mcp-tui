@@ -4,8 +4,6 @@ Build the mcpv MVP through these draft tasks in dependency order. Each is a revi
 
 ## Next
 
-- 0009-mock-mcp-server — next: runnable SDK-backed HTTP fixture, success/error/latency tools, stateless/stateful modes, and catalogs.
-- 0002-http-client-lifecycle — initialize, catalogs, stateless operation, cancellation, reconnect.
 - 0003-terminal-shell-and-status — cleanup/panic hook, input/resize, status/logs, navigation.
 - 0004-server-info-and-tool-browser — metadata, complete tools list, descriptions and schemas.
 - 0005-schema-json-skeleton — pure helper and unit tests.

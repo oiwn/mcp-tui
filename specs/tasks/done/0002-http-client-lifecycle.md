@@ -1,6 +1,6 @@
 ---
 id: 0002-http-client-lifecycle
-status: approval
+status: done
 scope: [src/client.rs, src/error.rs, src/app.rs, src/main.rs, tests/http_client.rs, src/lib.rs, Cargo.toml, Cargo.lock, README.md, examples/support/server.rs, examples/dev_server.rs, tests/dev_server.rs]
 created: 2026-10-13
 source: User mcpv MVP brief; Rust 2024 and toolchain 1.99
@@ -62,3 +62,5 @@ Approved against the plan. Fifteen tests pass, including real HTTP lifecycle/cat
 - 2026-10-14 advance in-progress/implement → in-progress/verify
 - 2026-10-14 advance in-progress/verify → in-progress/review
 - 2026-10-14 advance in-progress/review → approval
+- 2026-10-14 approved: ok it works
+- 2026-10-14 advance approval → done

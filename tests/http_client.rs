@@ -298,25 +298,16 @@ async fn dropping_an_initialized_handle_cleans_up() -> Result<(), TestError> {
     Ok(())
 }
 
-#[cfg(unix)]
 #[tokio::test]
-async fn ctrl_c_during_initialization_exits_130() -> Result<(), TestError> {
-    let (url, server, started) = stalled_endpoint().await?;
-    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_mcpv"))
-        .arg(url)
-        .kill_on_drop(true)
-        .spawn()?;
-    tokio::time::timeout(Duration::from_secs(5), started.notified()).await?;
-    let id = child.id().ok_or(TestError::Closed)?;
-    let signal = tokio::process::Command::new("/bin/kill")
-        .args(["-INT", &id.to_string()])
-        .status()
-        .await?;
-    assert!(signal.success());
-    let status =
-        tokio::time::timeout(Duration::from_secs(3), child.wait()).await??;
-    assert_eq!(status.code(), Some(130));
-    server.abort();
+async fn help_and_version_work_without_a_terminal() -> Result<(), TestError> {
+    for flag in ["--help", "--version"] {
+        let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_mcpv"))
+            .arg(flag)
+            .output()
+            .await?;
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains("mcpv"));
+    }
     Ok(())
 }
 
@@ -385,22 +376,36 @@ fn stale_events_cannot_override_new_generation() {
 }
 
 #[tokio::test]
-async fn cli_summary_and_failures() -> Result<(), TestError> {
+async fn noninteractive_tui_headless_dispatch_and_url_failures_are_clean()
+-> Result<(), TestError> {
     let fixture =
         Fixture::start(([127, 0, 0, 1], 0).into(), FixtureConfig::default())
             .await?;
     let url = fixture.url();
+    let headless_url = url.clone();
     let output = tokio::task::spawn_blocking(move || {
         std::process::Command::new(env!("CARGO_BIN_EXE_mcpv"))
             .arg(url)
             .output()
     })
     .await??;
-    assert!(output.status.success());
-    let summary = String::from_utf8_lossy(&output.stdout);
-    assert!(summary.contains("mcpv-dev-server 0.1.0"));
-    assert!(summary.contains("Protocol:"));
-    assert!(summary.contains("Tools: 3"));
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("requires interactive")
+    );
+    assert!(output.stdout.is_empty());
+    let headless = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_mcpv"))
+            .arg(headless_url)
+            .args(["info", "--json"])
+            .output()
+    })
+    .await??;
+    assert!(headless.status.success());
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&headless.stdout).map_err(FixtureError::Json)?;
+    assert_eq!(metadata["data"]["serverInfo"]["name"], "mcpv-dev-server");
+    assert!(headless.stderr.is_empty());
     let output = tokio::task::spawn_blocking(|| {
         std::process::Command::new(env!("CARGO_BIN_EXE_mcpv"))
             .arg("file:///tmp/server")

@@ -60,6 +60,7 @@ pub struct FixtureConfig {
     pub list_delay: Duration,
     pub list_started: Arc<tokio::sync::Notify>,
     pub list_requests: Arc<AtomicUsize>,
+    pub http_requests: Arc<AtomicUsize>,
 }
 
 impl Default for FixtureConfig {
@@ -73,6 +74,7 @@ impl Default for FixtureConfig {
             list_delay: Duration::ZERO,
             list_started: Arc::new(tokio::sync::Notify::new()),
             list_requests: Arc::new(AtomicUsize::new(0)),
+            http_requests: Arc::new(AtomicUsize::new(0)),
         }
     }
 }
@@ -263,7 +265,7 @@ impl Fixture {
         let session_header_seen = Arc::new(AtomicBool::new(false));
         let router = axum::Router::new().nest_service("/mcp", service).layer(
             axum::middleware::from_fn_with_state(
-                session_header_seen.clone(),
+                (session_header_seen.clone(), config.http_requests.clone()),
                 observe_headers,
             ),
         );
@@ -304,10 +306,14 @@ impl Fixture {
 }
 
 async fn observe_headers(
-    axum::extract::State(seen): axum::extract::State<Arc<AtomicBool>>,
+    axum::extract::State((seen, requests)): axum::extract::State<(
+        Arc<AtomicBool>,
+        Arc<AtomicUsize>,
+    )>,
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
+    requests.fetch_add(1, Ordering::SeqCst);
     let response = next.run(request).await;
     if response.headers().contains_key("mcp-session-id") {
         seen.store(true, Ordering::SeqCst);

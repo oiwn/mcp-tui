@@ -2,7 +2,9 @@ use std::{sync::Arc, time::Duration};
 
 use rmcp::{
     RoleClient, ServiceExt,
-    model::{ClientConfig, ServerPeerInfo, Tool},
+    model::{
+        CallToolRequestParams, CallToolResult, ClientConfig, ServerPeerInfo, Tool,
+    },
     service::{QuitReason, RunningService},
     transport::StreamableHttpClientTransport,
 };
@@ -123,17 +125,12 @@ impl ClientHandle {
         url: &str,
         options: ClientOptions,
     ) -> Result<(Self, mpsc::UnboundedReceiver<ClientEvent>)> {
-        let parsed = url::Url::parse(url)?;
-        if !matches!(parsed.scheme(), "http" | "https")
-            || parsed.host_str().is_none()
-        {
-            return Err(AppError::UnsupportedUrl);
-        }
+        let parsed = validate_url(url)?;
         let (commands, receiver) = mpsc::channel(16);
         let (events, event_receiver) = mpsc::unbounded_channel();
         let shutdown = CancellationToken::new();
         let worker = tokio::spawn(worker(
-            parsed.to_string(),
+            parsed,
             options,
             receiver,
             events,
@@ -310,7 +307,72 @@ async fn worker(
     Ok(())
 }
 
-type Service = RunningService<RoleClient, ClientConfig>;
+pub type McpService = RunningService<RoleClient, ClientConfig>;
+
+pub fn validate_url(url: &str) -> Result<String> {
+    let parsed = url::Url::parse(url)?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none()
+    {
+        return Err(AppError::UnsupportedUrl);
+    }
+    Ok(parsed.to_string())
+}
+
+pub async fn initialize(url: &str, deadline: Duration) -> Result<McpService> {
+    let url = validate_url(url)?;
+    tokio::time::timeout(
+        deadline,
+        ClientConfig::default()
+            .serve(StreamableHttpClientTransport::from_uri(url)),
+    )
+    .await
+    .map_err(|_| AppError::Timeout {
+        operation: Operation::Initialize,
+        duration: deadline,
+    })?
+    .map_err(|error| AppError::Initialize(Box::new(error)))
+}
+
+pub async fn close_service(
+    service: &mut McpService,
+    deadline: Duration,
+) -> Result<()> {
+    match service.close_with_timeout(deadline).await? {
+        Some(QuitReason::JoinError(error)) => Err(AppError::Worker(error)),
+        Some(_) => Ok(()),
+        None => Err(AppError::Timeout {
+            operation: Operation::Shutdown,
+            duration: deadline,
+        }),
+    }
+}
+
+pub async fn list_all_tools(
+    peer: &rmcp::service::Peer<RoleClient>,
+    deadline: Duration,
+) -> Result<Vec<Tool>> {
+    tokio::time::timeout(deadline, peer.list_all_tools())
+        .await
+        .map_err(|_| AppError::Timeout {
+            operation: Operation::ListTools,
+            duration: deadline,
+        })?
+        .map_err(AppError::Request)
+}
+
+pub async fn call_tool(
+    service: &McpService,
+    params: CallToolRequestParams,
+    deadline: Duration,
+) -> Result<CallToolResult> {
+    tokio::time::timeout(deadline, service.call_tool(params))
+        .await
+        .map_err(|_| AppError::Timeout {
+            operation: Operation::CallTool,
+            duration: deadline,
+        })?
+        .map_err(AppError::Request)
+}
 
 async fn run_generation(
     url: String,
@@ -320,13 +382,10 @@ async fn run_generation(
     cancellation: CancellationToken,
 ) -> Result<()> {
     emit(&events, generation, EventKind::Connecting);
-    let service: Service = tokio::select! {
+    let service = tokio::select! {
         biased;
         _ = cancellation.cancelled() => return Ok(()),
-        result = tokio::time::timeout(options.initialize_timeout, ClientConfig::default().serve(StreamableHttpClientTransport::from_uri(url))) => {
-            result.map_err(|_| AppError::Timeout { operation: Operation::Initialize, duration: options.initialize_timeout })?
-                .map_err(|error| AppError::Initialize(Box::new(error)))?
-        }
+        result = initialize(&url,options.initialize_timeout) => result?,
     };
     let peer = service.peer().clone();
     let session = Session::new(service);
@@ -334,31 +393,21 @@ async fn run_generation(
         let info = peer.peer_info().ok_or(AppError::MissingMetadata)?;
         emit(&events, generation, EventKind::Connected(info.clone()));
         if info.capabilities.tools.is_some() {
-            let tools = tokio::time::timeout(
-                options.catalog_timeout,
-                peer.list_all_tools(),
-            )
-            .await;
+            let tools = list_all_tools(&peer, options.catalog_timeout).await;
             match tools {
-                Ok(Ok(tools)) => emit(
+                Ok(tools) => emit(
                     &events,
                     generation,
                     EventKind::Catalog(CatalogState::Ready(Arc::new(tools))),
                 ),
-                Ok(Err(error @ rmcp::ServiceError::McpError(_))) => emit(
+                Err(
+                    error @ AppError::Request(rmcp::ServiceError::McpError(_)),
+                ) => emit(
                     &events,
                     generation,
-                    EventKind::Catalog(CatalogState::Failed(Arc::new(
-                        AppError::Request(error),
-                    ))),
+                    EventKind::Catalog(CatalogState::Failed(Arc::new(error))),
                 ),
-                Ok(Err(error)) => return Err(AppError::Request(error)),
-                Err(_) => {
-                    return Err(AppError::Timeout {
-                        operation: Operation::ListTools,
-                        duration: options.catalog_timeout,
-                    });
-                }
+                Err(error) => return Err(error),
             }
         } else {
             emit(
@@ -381,7 +430,7 @@ struct Session {
 }
 
 impl Session {
-    fn new(service: Service) -> Self {
+    fn new(service: McpService) -> Self {
         Self {
             cancellation: Some(service.cancellation_token()),
             monitor: tokio::spawn(service.waiting()),

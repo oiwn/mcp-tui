@@ -1,6 +1,6 @@
 ---
 id: 0009-mock-mcp-server
-status: approval
+status: done
 scope: [examples/**, tests/dev_server.rs, Cargo.toml, Cargo.lock, README.md]
 created: 2026-10-14
 source: User requested a runnable mock MCP server as the next task
@@ -56,3 +56,5 @@ Fixture uses the official SDK and shared construction, dev-only server dependenc
 - 2026-10-14 advance in-progress/implement → in-progress/verify
 - 2026-10-14 advance in-progress/verify → in-progress/review
 - 2026-10-14 advance in-progress/review → approval
+- 2026-10-14 approved: ok it works
+- 2026-10-14 advance approval → done

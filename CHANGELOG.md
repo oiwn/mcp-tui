@@ -9,6 +9,21 @@ Completed tasks, newest entry at the top, dated. `specdev task done` adds an ent
 - files touched / decisions locked
 -->
 
+## 2026-10-15 — agent cli and live server checks
+
+- Add headless MCP inspection/tool calls, a repo-local agent skill, and verified HTTPS live-server checks.
+- Task `0010-agent-cli-and-live-server-checks`; source: User requests a CLI/testing facility for agents; live target https://exodata.space/mcp
+
+## 2026-10-14 — mock mcp server
+
+- Provide a runnable SDK-backed MCP development server with deterministic tools and HTTP tests.
+- Task `0009-mock-mcp-server`; source: User requested a runnable mock MCP server as the next task
+
+## 2026-10-14 — http client lifecycle
+
+- Add SDK-backed HTTP connection and reconnect lifecycle.
+- Task `0002-http-client-lifecycle`; source: User mcpv MVP brief; Rust 2024 and toolchain 1.99
+
 ## 2026-10-14 — mcpv foundation
 
 - Replace the database project with the mcpv Rust foundation.

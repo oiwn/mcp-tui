@@ -12,3 +12,7 @@ specdev skill when starting a session, continuing from specs, or picking up a
 task. Always read `specs/overview.md` and `specs/ctx.md` before coding.
 <!-- END specdev -->
 
+## MCP server inspection
+
+Use the repo-local mcpv skill at .agents/skills/mcpv/SKILL.md when inspecting, debugging, or retrieving information from MCP servers through the headless CLI.
+

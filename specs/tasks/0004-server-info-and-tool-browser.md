@@ -10,9 +10,13 @@ depends: [0002-http-client-lifecycle, 0003-terminal-shell-and-status]
 
 ## Plan
 
-- [ ] Render server name/version, negotiated protocol, capabilities, and complete tool count from SDK events.
-- [ ] List every tool on the left with name and one-line description; support absent descriptions and empty catalogs.
-- [ ] Navigate with arrows and j/k/g/G; provide explicit focus switching and scroll the full description/pretty JSON inputSchema on the right; preserve valid selection after refresh.
+- [ ] Extend task 0003's server summary into a scrollable Server view with full advertised capabilities and server instructions, retaining identity/protocol/count information.
+- [ ] Reuse the existing complete tools list and replace its summary-only right pane with selected-tool full description and pretty JSON inputSchema; provide Tools/Server view switching.
+- [ ] Reuse focus and arrows/j/k/g/G navigation to scroll details independently, handle missing descriptions/empty catalogs, and preserve valid selection after refresh.
+
+## Context
+
+Task 0003 owns terminal cleanup, event loop, basic list selection, status, and logs. This task adds detailed inspection to that established screen. Tool editing/invocation/results remain task 0006; prompts/resources tabs remain task 0007.
 
 ## Manual checks
 
