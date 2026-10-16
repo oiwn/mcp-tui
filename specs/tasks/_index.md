@@ -7,7 +7,6 @@
 
 ## Draft
 
-- **0004-server-info-and-tool-browser** — draft — server info and tool browser (User mcpv MVP brief; Rust 2024 and toolchain 1.99)
 - **0005-schema-json-skeleton** — draft — schema json skeleton (User mcpv MVP brief; Rust 2024 and toolchain 1.99)
 - **0006-tool-editor-and-results** — draft — tool editor and results (User mcpv MVP brief; Rust 2024 and toolchain 1.99)
 - **0007-prompts-and-resources-tabs** — draft — prompts and resources tabs (User mcpv MVP brief; Rust 2024 and toolchain 1.99)
@@ -17,5 +16,6 @@
 
 - **0001-mcpv-foundation** — done — mcpv foundation (User mcpv MVP brief; Rust 2024 and toolchain 1.99)
 - **0002-http-client-lifecycle** — done — http client lifecycle (User mcpv MVP brief; Rust 2024 and toolchain 1.99)
+- **0004-server-info-and-tool-browser** — done — server info and tool browser (User mcpv MVP brief; Rust 2024 and toolchain 1.99)
 - **0009-mock-mcp-server** — done — mock mcp server (User requested a runnable mock MCP server as the next task)
 - **0010-agent-cli-and-live-server-checks** — done — agent cli and live server checks (User requests a CLI/testing facility for agents; live target https://exodata.space/mcp)

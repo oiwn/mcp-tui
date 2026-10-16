@@ -19,12 +19,15 @@ Initialization and full tool listing each have a 10-second deadline; cleanup is 
 ## Keys and screen
 
 - Arrows or j/k select tools or scroll the focused pane; g/G jump to its beginning/end.
-- Tab/Shift-Tab changes focus between tools, summary, and the activity drawer when open.
+- 1/2 switches between Tools and Server tabs; each switch focuses that tab's initial body pane.
+- Tab/Shift-Tab changes focus between the active tab's panes and the activity drawer when open.
 - l toggles activity logs; G resumes following their tail after scrolling away.
 - r cancels old work and reconnects. Cached tools/metadata remain labeled offline after disconnect and clear when reconnect starts.
 - q quits with exit 0; Ctrl-C cancels and exits 130.
 
-Wide screens show tools and server summary side by side. Narrow screens show the focused pane; short screens show focused logs in place of the body. The full URL is available in the scrollable summary. TUI schema details, invocation/results, and prompts/resources browsing are planned next; its last-call latency displays — until TUI calls are implemented.
+The Tools tab shows a tool list alongside the selected tool's full description and formatted inputSchema. Changing selection resets detail scrolling; catalog replacement retains selection by name when possible. The Server tab uses the full width for URL, connection state, identity/protocol, catalog count, full capabilities, instructions, and errors. Both detail views scroll independently.
+
+Narrow screens show the focused pane; short screens show focused logs in place of the body. Tiny screens show a resize hint while global controls remain active. TUI invocation/results and prompts/resources browsing are planned next; last-call latency displays — until TUI calls are implemented.
 
 Colors inherit terminal defaults. Errors use red plus an ERROR label; if NO_COLOR is set, the label remains visible without color.
 

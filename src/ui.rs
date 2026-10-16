@@ -7,7 +7,22 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
 
-use crate::app::{Focus, Level, Screen};
+use crate::app::{Focus, Level, Screen, View};
+
+fn multiline(text: &str) -> String {
+    text.chars()
+        .map(|character| match character {
+            '\n' => '\n',
+            character if character.is_control() => ' ',
+            character => character,
+        })
+        .collect()
+}
+
+fn json<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_string_pretty(value)
+        .unwrap_or_else(|error| format!("Unable to display JSON: {error}"))
+}
 
 pub fn single_line(text: &str) -> String {
     text.chars()
@@ -142,6 +157,25 @@ pub fn draw(frame: &mut Frame<'_>, screen: &mut Screen) {
                 protocol(screen),
                 capabilities(screen)
             )),
+            Line::from(vec![
+                Span::styled(
+                    "1 Tools",
+                    if screen.view == View::Tools {
+                        Style::default().reversed().bold()
+                    } else {
+                        Style::default()
+                    },
+                ),
+                Span::raw(" | "),
+                Span::styled(
+                    "2 Server",
+                    if screen.view == View::Server {
+                        Style::default().reversed().bold()
+                    } else {
+                        Style::default()
+                    },
+                ),
+            ]),
         ]),
         header,
     );
@@ -169,8 +203,13 @@ pub fn draw(frame: &mut Frame<'_>, screen: &mut Screen) {
     };
     frame.render_widget(
         Paragraph::new(format!(
-            "{} | Last call: — | {}",
+            "{}{} | Last call: — | {}",
             connection(screen),
+            if screen.error().is_some() {
+                " ERROR (2 Server/l logs)"
+            } else {
+                ""
+            },
             single_line(&screen.url)
         ))
         .style(status_style),
@@ -178,7 +217,8 @@ pub fn draw(frame: &mut Frame<'_>, screen: &mut Screen) {
     );
     let movement = match screen.focus {
         Focus::Tools => "select",
-        Focus::Summary => "scroll summary",
+        Focus::Details => "scroll details",
+        Focus::Summary => "scroll server",
         Focus::Logs => "scroll logs",
     };
     frame.render_widget(Paragraph::new(format!("q quit  r reconnect  l logs  Tab focus  ↑↓/jk {movement}  g/G ends  Ctrl-C")),hints);
@@ -190,6 +230,10 @@ fn body_panes(
     area: Rect,
     wide: bool,
 ) {
+    if screen.view == View::Server {
+        summary(frame, screen, area);
+        return;
+    }
     if wide {
         let [left, right] = Layout::horizontal([
             Constraint::Percentage(40),
@@ -197,10 +241,10 @@ fn body_panes(
         ])
         .areas(area);
         tools(frame, screen, left);
-        summary(frame, screen, right);
+        details(frame, screen, right);
     } else {
         match screen.focus {
-            Focus::Summary => summary(frame, screen, area),
+            Focus::Details => details(frame, screen, area),
             _ => tools(frame, screen, area),
         }
     }
@@ -249,7 +293,7 @@ fn tools(frame: &mut Frame<'_>, screen: &mut Screen, area: Rect) {
                 CatalogState::Unsupported => "Tools unsupported by this server.",
                 CatalogState::Ready(_) => "0 tools — the catalog is empty.",
                 CatalogState::Failed(_) => {
-                    "Tool listing failed. See summary or logs."
+                    "Tool listing failed. See 2 Server or logs."
                 }
             };
             frame.render_widget(
@@ -262,12 +306,54 @@ fn tools(frame: &mut Frame<'_>, screen: &mut Screen, area: Rect) {
     }
 }
 
+fn details(frame: &mut Frame<'_>, screen: &mut Screen, area: Rect) {
+    let text = match screen.selected_tool() {
+        Some(tool) => format!(
+            "Tool: {}\n\nDescription:\n{}\n\ninputSchema:\n{}",
+            single_line(&tool.name),
+            tool.description
+                .as_deref()
+                .filter(|text| !text.trim().is_empty())
+                .map(multiline)
+                .unwrap_or_else(|| "No description provided.".into()),
+            json(&tool.input_schema),
+        ),
+        None => match &screen.client.catalog {
+            CatalogState::Loading => {
+                "No tool selected. Waiting for a tool catalog.".into()
+            }
+            CatalogState::Unsupported => {
+                "Tools unsupported by this server.".into()
+            }
+            CatalogState::Ready(_) => {
+                "No tool selected. The catalog is empty.".into()
+            }
+            CatalogState::Failed(_) => {
+                "Tool listing failed. See 2 Server or logs.".into()
+            }
+        },
+    };
+    let border = block(
+        format!("Tool details{}", offline(screen)),
+        screen.focus == Focus::Details,
+    );
+    scrollable(
+        frame,
+        area,
+        border,
+        text.lines()
+            .map(|line| Line::raw(line.to_owned()))
+            .collect(),
+        &mut screen.details_scroll,
+        &mut screen.details_max_scroll,
+    );
+}
+
 fn summary(frame: &mut Frame<'_>, screen: &mut Screen, area: Rect) {
     let border = block(
-        format!("Server summary{}", offline(screen)),
+        format!("Server{}", offline(screen)),
         screen.focus == Focus::Summary,
     );
-    let inner = border.inner(area);
     let mut lines = vec![
         Line::from(format!("URL: {}", single_line(&screen.url))),
         Line::from(format!("Connection: {}", connection(screen))),
@@ -282,18 +368,53 @@ fn summary(frame: &mut Frame<'_>, screen: &mut Screen, area: Rect) {
         )));
         lines.push(Line::from("Press r to reconnect; l opens activity logs."));
     }
+    let metadata = match &screen.client.server {
+        Some(info) => format!(
+            "\nServer identity:\n{}\n\nCapabilities:\n{}\n\nInstructions:\n{}",
+            info.server_info
+                .as_ref()
+                .map(json)
+                .unwrap_or_else(|| "Unknown server identity.".into()),
+            json(&info.capabilities),
+            info.instructions
+                .as_deref()
+                .filter(|text| !text.trim().is_empty())
+                .map(multiline)
+                .unwrap_or_else(|| "No instructions provided.".into()),
+        ),
+        None => {
+            "\nCapabilities: unknown\nInstructions: unavailable until connected."
+                .into()
+        }
+    };
+    lines.extend(metadata.lines().map(|line| Line::raw(line.to_owned())));
+    scrollable(
+        frame,
+        area,
+        border,
+        lines,
+        &mut screen.summary_scroll,
+        &mut screen.summary_max_scroll,
+    );
+}
+
+fn scrollable(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    border: Block<'_>,
+    lines: Vec<Line<'_>>,
+    scroll: &mut usize,
+    max_scroll: &mut usize,
+) {
+    let inner = border.inner(area);
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-    screen.summary_max_scroll = paragraph
+    *max_scroll = paragraph
         .line_count(inner.width)
         .saturating_sub(usize::from(inner.height))
         .min(usize::from(u16::MAX));
-    screen.summary_scroll = screen.summary_scroll.min(screen.summary_max_scroll);
-    frame.render_widget(
-        paragraph
-            .block(border)
-            .scroll((screen.summary_scroll as u16, 0)),
-        area,
-    );
+    *scroll = (*scroll).min(*max_scroll);
+    frame
+        .render_widget(paragraph.block(border).scroll((*scroll as u16, 0)), area);
 }
 
 fn logs(frame: &mut Frame<'_>, screen: &mut Screen, area: Rect) {
@@ -394,7 +515,10 @@ mod tests {
             "Capabilities: tools",
             "ping",
             "Return JSON",
-            "Server summary",
+            "Tool details",
+            "inputSchema:",
+            "1 Tools",
+            "2 Server",
             "Last call: —",
             "Tab focus",
         ] {
@@ -415,8 +539,11 @@ mod tests {
         screen.client.catalog =
             CatalogState::Failed(Arc::new(AppError::ConnectionClosed));
         let (text, red) = render(&mut screen, 100, 24)?;
-        assert!(text.contains("ERROR:"));
+        assert!(text.contains("ERROR"));
         assert!(red);
+        screen.switch_view(View::Server);
+        assert!(render(&mut screen, 100, 24)?.0.contains("ERROR:"));
+        screen.switch_view(View::Tools);
         screen.apply(ClientEvent {
             generation: 1,
             kind: EventKind::Disconnected(Some(Arc::new(
@@ -436,14 +563,17 @@ mod tests {
     -> Result<(), std::convert::Infallible> {
         let mut screen = screen();
         assert!(render(&mut screen, 50, 16)?.0.contains("ping"));
-        screen.focus = Focus::Summary;
+        screen.focus = Focus::Details;
         let text = render(&mut screen, 50, 16)?.0;
-        assert!(text.contains("Server summary"));
-        assert!(!text.contains("Return JSON"));
+        assert!(text.contains("Tool details"));
+        assert!(text.contains("Return JSON"));
         screen.toggle_logs();
         assert!(render(&mut screen, 50, 10)?.0.contains("Activity"));
         for (width, height) in [(31, 7), (1, 1), (0, 0), (80, 8), (32, 8)] {
             render(&mut screen, width, height)?;
+            screen.switch_view(View::Server);
+            render(&mut screen, width, height)?;
+            screen.switch_view(View::Tools);
         }
         Ok(())
     }
@@ -451,5 +581,109 @@ mod tests {
     #[test]
     fn terminal_control_characters_do_not_reach_widgets() {
         assert_eq!(single_line("line\nnext\u{1b}[31m"), "line next [31m");
+        assert_eq!(multiline("line\nnext\r\t\u{1b}[31m"), "line\nnext   [31m");
+    }
+
+    #[test]
+    fn long_details_scroll_to_end_and_clamp_after_resize()
+    -> Result<(), std::convert::Infallible> {
+        let mut screen = screen();
+        let schema = serde_json::json!({"type":"object", "properties": {
+            "text": {"type":"string", "description":"SCHEMA_END"}
+        }});
+        let description = (0..40)
+            .map(|i| format!("Description line {i}\n"))
+            .collect::<String>();
+        let mut tool = Tool::new("long", description, serde_json::Map::new());
+        tool.input_schema =
+            Arc::new(schema.as_object().cloned().unwrap_or_default());
+        screen.apply(ClientEvent {
+            generation: 1,
+            kind: EventKind::Catalog(CatalogState::Ready(Arc::new(vec![tool]))),
+        });
+        screen.focus = Focus::Details;
+        assert!(
+            render(&mut screen, 100, 24)?
+                .0
+                .contains("Description line 0")
+        );
+        assert!(screen.details_max_scroll > 30);
+        screen.navigate(crossterm::event::KeyCode::Char('G'));
+        assert!(render(&mut screen, 100, 24)?.0.contains("SCHEMA_END"));
+        render(&mut screen, 160, 100)?;
+        assert_eq!(screen.details_scroll, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn server_shows_complete_capabilities_and_multiline_instructions()
+    -> Result<(), std::convert::Infallible> {
+        let mut screen = screen();
+        let mut info = ServerPeerInfo::new(ProtocolVersion::V_2025_11_25,
+            serde_json::from_value(serde_json::json!({"tools":{"listChanged":true},"experimental":{"custom":{"enabled":true}}})).unwrap_or_default())
+            .with_server_info(Implementation::new("fixture", "1.0"));
+        info.instructions =
+            Some("First instruction\nSecond instruction\u{1b}".into());
+        screen.apply(ClientEvent {
+            generation: 1,
+            kind: EventKind::Connected(Arc::new(info)),
+        });
+        screen.switch_view(View::Server);
+        let text = render(&mut screen, 100, 50)?.0;
+        for expected in [
+            "URL:",
+            "Tools: 1",
+            "listChanged",
+            "experimental",
+            "custom",
+            "First instruction",
+            "Second instruction",
+        ] {
+            assert!(text.contains(expected), "missing {expected}");
+        }
+        assert!(!text.contains("Tool details"));
+        render(&mut screen, 50, 16)?;
+        screen.navigate(crossterm::event::KeyCode::Char('G'));
+        assert!(
+            render(&mut screen, 50, 16)?
+                .0
+                .contains("Second instruction")
+        );
+        screen.switch_view(View::Tools);
+        assert_eq!(screen.details_scroll, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn missing_metadata_description_and_catalog_have_explicit_labels()
+    -> Result<(), std::convert::Infallible> {
+        let mut empty = Screen::new("http://localhost/mcp".into());
+        assert!(render(&mut empty, 100, 24)?.0.contains("No tool selected"));
+        empty.switch_view(View::Server);
+        assert!(
+            render(&mut empty, 100, 24)?
+                .0
+                .contains("Capabilities: unknown")
+        );
+        let mut screen = screen();
+        screen.switch_view(View::Server);
+        assert!(
+            render(&mut screen, 100, 40)?
+                .0
+                .contains("No instructions provided")
+        );
+        screen.apply(ClientEvent {
+            generation: 1,
+            kind: EventKind::Catalog(CatalogState::Ready(Arc::new(vec![
+                Tool::new("empty", "", serde_json::Map::new()),
+            ]))),
+        });
+        screen.switch_view(View::Tools);
+        assert!(
+            render(&mut screen, 100, 24)?
+                .0
+                .contains("No description provided")
+        );
+        Ok(())
     }
 }

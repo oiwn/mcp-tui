@@ -24,8 +24,15 @@ use crate::{cli::Args, terminal::TerminalGuard, ui};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Tools,
+    Details,
     Summary,
     Logs,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum View {
+    Tools,
+    Server,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,10 +51,13 @@ pub struct Screen {
     pub url: String,
     pub client: ClientState,
     pub focus: Focus,
+    pub view: View,
     previous_focus: Focus,
     pub tools: ListState,
     pub summary_scroll: usize,
     pub summary_max_scroll: usize,
+    pub details_scroll: usize,
+    pub details_max_scroll: usize,
     pub logs_open: bool,
     pub logs: VecDeque<LogEntry>,
     pub log_scroll: usize,
@@ -67,10 +77,13 @@ impl Screen {
                 ..Default::default()
             },
             focus: Focus::Tools,
+            view: View::Tools,
             previous_focus: Focus::Tools,
             tools: ListState::default(),
             summary_scroll: 0,
             summary_max_scroll: 0,
+            details_scroll: 0,
+            details_max_scroll: 0,
             logs_open: false,
             logs: VecDeque::new(),
             log_scroll: 0,
@@ -122,6 +135,8 @@ impl Screen {
         self.client.begin_generation(generation);
         self.tools = ListState::default();
         self.summary_scroll = 0;
+        self.summary_max_scroll = 0;
+        self.reset_details();
         self.local_error = None;
         self.log(
             Level::Info,
@@ -133,6 +148,13 @@ impl Screen {
         if event.generation < self.client.generation {
             return;
         }
+        let new_generation = event.generation > self.client.generation;
+        let selected_name = if new_generation {
+            None
+        } else {
+            self.selected_tool().map(|tool| tool.name.to_string())
+        };
+        let catalog_changed = matches!(event.kind, EventKind::Catalog(_));
         let (level, message) = match &event.kind {
             EventKind::Connecting => (
                 Level::Info,
@@ -161,26 +183,66 @@ impl Screen {
             EventKind::Disconnected(None) => (Level::Info, "Disconnected".into()),
         };
         self.client.apply(event);
-        if let CatalogState::Ready(tools) = &self.client.catalog {
-            self.tools.select(if tools.is_empty() {
-                None
-            } else {
-                Some(self.tools.selected().unwrap_or(0).min(tools.len() - 1))
-            });
+        if new_generation || catalog_changed {
+            let selected = match &self.client.catalog {
+                CatalogState::Ready(tools) if !tools.is_empty() => Some(
+                    selected_name
+                        .as_deref()
+                        .and_then(|name| {
+                            tools.iter().position(|tool| tool.name == name)
+                        })
+                        .unwrap_or(0),
+                ),
+                _ => None,
+            };
+            self.tools = ListState::default().with_selected(selected);
+            // A replacement definition may change even when the name is retained.
+            self.reset_details();
+            if new_generation {
+                self.summary_scroll = 0;
+                self.summary_max_scroll = 0;
+            }
         }
         self.log(level, message);
     }
 
     pub fn cycle_focus(&mut self, reverse: bool) {
-        self.focus = match (self.focus, reverse, self.logs_open) {
-            (Focus::Tools, false, _)
-            | (Focus::Tools, true, false)
-            | (Focus::Logs, true, _) => Focus::Summary,
-            (Focus::Summary, false, true) | (Focus::Tools, true, true) => {
-                Focus::Logs
-            }
-            _ => Focus::Tools,
+        let mut panes = match self.view {
+            View::Tools => vec![Focus::Tools, Focus::Details],
+            View::Server => vec![Focus::Summary],
         };
+        if self.logs_open {
+            panes.push(Focus::Logs);
+        }
+        let current = panes
+            .iter()
+            .position(|focus| *focus == self.focus)
+            .unwrap_or(0);
+        let step = if reverse { panes.len() - 1 } else { 1 };
+        self.focus = panes[(current + step) % panes.len()];
+    }
+
+    pub fn switch_view(&mut self, view: View) {
+        self.view = view;
+        self.focus = match view {
+            View::Tools => Focus::Tools,
+            View::Server => Focus::Summary,
+        };
+        self.previous_focus = self.focus;
+    }
+
+    pub fn selected_tool(&self) -> Option<&rmcp::model::Tool> {
+        match &self.client.catalog {
+            CatalogState::Ready(tools) => {
+                self.tools.selected().and_then(|index| tools.get(index))
+            }
+            _ => None,
+        }
+    }
+
+    fn reset_details(&mut self) {
+        self.details_scroll = 0;
+        self.details_max_scroll = 0;
     }
 
     pub fn toggle_logs(&mut self) {
@@ -206,6 +268,7 @@ impl Screen {
                 (self.tools.selected().unwrap_or(0), tools.len() - 1)
             }
             Focus::Summary => (self.summary_scroll, self.summary_max_scroll),
+            Focus::Details => (self.details_scroll, self.details_max_scroll),
             Focus::Logs => (
                 self.log_scroll,
                 self.logs.len().saturating_sub(self.log_view_height),
@@ -221,8 +284,14 @@ impl Screen {
             _ => return,
         };
         match self.focus {
-            Focus::Tools => self.tools.select(Some(next)),
+            Focus::Tools => {
+                if self.tools.selected() != Some(next) {
+                    self.reset_details();
+                }
+                self.tools.select(Some(next));
+            }
             Focus::Summary => self.summary_scroll = next,
+            Focus::Details => self.details_scroll = next,
             Focus::Logs => {
                 self.log_scroll = next;
                 self.log_follow = next == last;
@@ -260,6 +329,14 @@ fn key_action(screen: &mut Screen, key: KeyEvent) -> Action {
         return Action::None;
     }
     match key.code {
+        KeyCode::Char('1') => {
+            screen.switch_view(View::Tools);
+            Action::None
+        }
+        KeyCode::Char('2') => {
+            screen.switch_view(View::Server);
+            Action::None
+        }
         KeyCode::Char('q') => Action::Quit(ExitCode::SUCCESS),
         KeyCode::Char('r') => Action::Reconnect,
         KeyCode::Char('l') => {
@@ -421,19 +498,89 @@ mod tests {
     fn focus_cycles_and_drawer_restores_previous_focus() {
         let mut screen = ready();
         screen.cycle_focus(true);
-        assert_eq!(screen.focus, Focus::Summary);
+        assert_eq!(screen.focus, Focus::Details);
         screen.toggle_logs();
         assert_eq!(screen.focus, Focus::Logs);
         screen.cycle_focus(true);
-        assert_eq!(screen.focus, Focus::Summary);
+        assert_eq!(screen.focus, Focus::Details);
         screen.cycle_focus(true);
         assert_eq!(screen.focus, Focus::Tools);
+        screen.cycle_focus(true);
+        assert_eq!(screen.focus, Focus::Logs);
+        screen.toggle_logs();
+        assert_eq!(screen.focus, Focus::Details);
+        screen.cycle_focus(false);
+        assert_eq!(screen.focus, Focus::Tools);
+    }
+
+    #[test]
+    fn tabs_have_valid_focus_with_logs_and_independent_scroll() {
+        let mut screen = ready();
+        screen.cycle_focus(false);
+        screen.details_max_scroll = 20;
+        screen.navigate(KeyCode::Char('G'));
+        screen.toggle_logs();
+        key_action(
+            &mut screen,
+            KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE),
+        );
+        assert_eq!(screen.view, View::Server);
+        assert_eq!(screen.focus, Focus::Summary);
+        screen.summary_max_scroll = 30;
+        screen.navigate(KeyCode::Down);
+        assert_eq!(screen.summary_scroll, 1);
         screen.cycle_focus(true);
         assert_eq!(screen.focus, Focus::Logs);
         screen.toggle_logs();
         assert_eq!(screen.focus, Focus::Summary);
         screen.cycle_focus(false);
+        assert_eq!(screen.focus, Focus::Summary);
+        key_action(
+            &mut screen,
+            KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE),
+        );
         assert_eq!(screen.focus, Focus::Tools);
+        assert_eq!(screen.details_scroll, 20);
+        screen.navigate(KeyCode::Down);
+        assert_eq!(screen.details_scroll, 0);
+        assert_eq!(screen.summary_scroll, 1);
+    }
+
+    #[test]
+    fn replacement_catalog_retains_name_and_resets_changed_details() {
+        let mut screen = ready();
+        screen.navigate(KeyCode::Down);
+        screen.details_scroll = 12;
+        screen.details_max_scroll = 20;
+        let catalog = |names: &[&str]| ClientEvent {
+            generation: 1,
+            kind: EventKind::Catalog(CatalogState::Ready(Arc::new(
+                names
+                    .iter()
+                    .map(|name| {
+                        Tool::new((*name).to_owned(), "", serde_json::Map::new())
+                    })
+                    .collect(),
+            ))),
+        };
+        screen.apply(catalog(&["third", "first", "second"]));
+        assert_eq!(screen.tools.selected(), Some(2));
+        assert_eq!(
+            screen.selected_tool().map(|tool| tool.name.as_ref()),
+            Some("second")
+        );
+        assert_eq!(screen.details_scroll, 0);
+        screen.apply(catalog(&["third", "first"]));
+        assert_eq!(screen.tools.selected(), Some(0));
+        screen.details_scroll = 10;
+        screen.apply(ClientEvent {
+            generation: 2,
+            kind: EventKind::Connecting,
+        });
+        assert!(screen.selected_tool().is_none());
+        assert_eq!(screen.details_scroll, 0);
+        screen.apply(catalog(&["second"]));
+        assert!(screen.selected_tool().is_none());
     }
 
     #[test]

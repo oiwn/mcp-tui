@@ -9,6 +9,11 @@ Completed tasks, newest entry at the top, dated. `specdev task done` adds an ent
 - files touched / decisions locked
 -->
 
+## 2026-10-16 — server info and tool browser
+
+- Expose server information and a two-pane tool/schema browser.
+- Task `0004-server-info-and-tool-browser`; source: User mcpv MVP brief; Rust 2024 and toolchain 1.99
+
 ## 2026-10-15 — agent cli and live server checks
 
 - Add headless MCP inspection/tool calls, a repo-local agent skill, and verified HTTPS live-server checks.
