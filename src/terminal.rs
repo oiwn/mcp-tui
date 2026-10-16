@@ -8,6 +8,7 @@ use std::{
 
 use crossterm::{
     cursor::{Hide, Show},
+    event::{DisableBracketedPaste, EnableBracketedPaste},
     execute,
     terminal::{
         EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
@@ -20,6 +21,7 @@ use ratatui::{DefaultTerminal, Terminal, backend::CrosstermBackend};
 const RAW: u8 = 1;
 const ALTERNATE: u8 = 2;
 const CURSOR: u8 = 4;
+const PASTE: u8 = 8;
 static MODES: AtomicU8 = AtomicU8::new(0);
 static HOOK: Once = Once::new();
 
@@ -47,6 +49,8 @@ impl TerminalGuard {
         execute!(io::stdout(), EnterAlternateScreen)?;
         MODES.fetch_or(CURSOR, Ordering::SeqCst);
         execute!(io::stdout(), Hide)?;
+        MODES.fetch_or(PASTE, Ordering::SeqCst);
+        execute!(io::stdout(), EnableBracketedPaste)?;
         guard.terminal =
             Some(Terminal::new(CrosstermBackend::new(io::stdout()))?);
         guard.get()?.clear()?;
@@ -71,6 +75,11 @@ fn restore_modes() -> io::Result<()> {
     let modes = MODES.swap(0, Ordering::SeqCst);
     let mut first_error = None;
     for result in [
+        if modes & PASTE != 0 {
+            execute!(io::stdout(), DisableBracketedPaste)
+        } else {
+            Ok(())
+        },
         if modes & RAW != 0 {
             disable_raw_mode()
         } else {

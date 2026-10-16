@@ -7,7 +7,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
 
-use crate::app::{Focus, Level, Screen, View};
+use crate::app::{Focus, Level, Mode, Screen, View};
 
 fn multiline(text: &str) -> String {
     text.chars()
@@ -180,7 +180,30 @@ pub fn draw(frame: &mut Frame<'_>, screen: &mut Screen) {
         header,
     );
 
-    if screen.logs_open && area.height >= 16 {
+    if screen.mode == Mode::Editor {
+        let error = screen
+            .editor
+            .as_ref()
+            .and_then(|editor| editor.error.as_ref())
+            .map(|error| format!("ERROR: {}", single_line(&error.to_string())));
+        let editor_area = if let Some(error) = error {
+            let [editor_area, message] =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(2)])
+                    .areas(body);
+            frame.render_widget(
+                Paragraph::new(error)
+                    .style(Style::default().fg(Color::Red))
+                    .wrap(Wrap { trim: false }),
+                message,
+            );
+            editor_area
+        } else {
+            body
+        };
+        if let Some(editor) = &mut screen.editor {
+            editor.draw(frame, editor_area);
+        }
+    } else if screen.logs_open && area.height >= 16 {
         let drawer_height = (body.height / 3)
             .clamp(4, 10)
             .min(body.height.saturating_sub(3));
@@ -196,20 +219,35 @@ pub fn draw(frame: &mut Frame<'_>, screen: &mut Screen) {
     } else {
         body_panes(frame, screen, body, area.width >= 80 && area.height >= 16);
     }
-    let status_style = if screen.error().is_some() {
+    let status_style = if screen.error().is_some()
+        || screen.last_call.as_ref().is_some_and(|call| call.failed())
+    {
         Style::default().fg(Color::Red)
     } else {
         Style::default()
     };
     frame.render_widget(
         Paragraph::new(format!(
-            "{}{} | Last call: — | {}",
+            "{}{} | Last call: {} | {}",
             connection(screen),
             if screen.error().is_some() {
                 " ERROR (2 Server/l logs)"
             } else {
                 ""
             },
+            screen
+                .last_call
+                .as_ref()
+                .map(|call| {
+                    let latency = call
+                        .elapsed
+                        .map(|time| {
+                            format!(" {:.1} ms", time.as_secs_f64() * 1000.0)
+                        })
+                        .unwrap_or_default();
+                    format!("{}{}", call.label(), latency)
+                })
+                .unwrap_or_else(|| "—".into()),
             single_line(&screen.url)
         ))
         .style(status_style),
@@ -221,7 +259,41 @@ pub fn draw(frame: &mut Frame<'_>, screen: &mut Screen) {
         Focus::Summary => "scroll server",
         Focus::Logs => "scroll logs",
     };
-    frame.render_widget(Paragraph::new(format!("q quit  r reconnect  l logs  Tab focus  ↑↓/jk {movement}  g/G ends  Ctrl-C")),hints);
+    let keys = match screen.mode {
+        Mode::Editor => {
+            if screen.pending() {
+                "Call active | Esc browse | Ctrl-R reset | Ctrl-U {} | Ctrl-C quit".into()
+            } else {
+                "F5/Ctrl-Enter send | Esc save/back | Ctrl-R reset | Ctrl-U {} | Ctrl-C quit".into()
+            }
+        }
+        Mode::Result => format!(
+            "Esc browse{}  v result  l logs  Tab focus  ↑↓/jk scroll  g/G ends  r reconnect  q quit",
+            if screen.client.connection == ConnectionState::Connected {
+                "  Enter edit"
+            } else {
+                ""
+            }
+        ),
+        Mode::Browse => format!(
+            "q quit  r reconnect  l logs  Tab focus  ↑↓/jk {movement}  g/G ends{}{}",
+            if screen.client.connection == ConnectionState::Connected
+                && screen.view == View::Tools
+                && screen.focus != Focus::Logs
+                && screen.selected_tool().is_some()
+            {
+                "  Enter edit"
+            } else {
+                ""
+            },
+            if screen.last_call.is_some() {
+                "  v result"
+            } else {
+                ""
+            }
+        ),
+    };
+    frame.render_widget(Paragraph::new(keys), hints);
 }
 
 fn body_panes(
@@ -230,6 +302,10 @@ fn body_panes(
     area: Rect,
     wide: bool,
 ) {
+    if screen.mode == Mode::Result {
+        result(frame, screen, area);
+        return;
+    }
     if screen.view == View::Server {
         summary(frame, screen, area);
         return;
@@ -309,8 +385,18 @@ fn tools(frame: &mut Frame<'_>, screen: &mut Screen, area: Rect) {
 fn details(frame: &mut Frame<'_>, screen: &mut Screen, area: Rect) {
     let text = match screen.selected_tool() {
         Some(tool) => format!(
-            "Tool: {}\n\nDescription:\n{}\n\ninputSchema:\n{}",
+            "Tool: {}\nCalls: {} | Last latency: {}\n\nDescription:\n{}\n\ninputSchema:\n{}",
             single_line(&tool.name),
+            screen
+                .metrics
+                .get(tool.name.as_ref())
+                .map_or(0, |metrics| metrics.count),
+            screen
+                .metrics
+                .get(tool.name.as_ref())
+                .and_then(|metrics| metrics.latency)
+                .map(|time| format!("{:.1} ms", time.as_secs_f64() * 1000.0))
+                .unwrap_or_else(|| "—".into()),
             tool.description
                 .as_deref()
                 .filter(|text| !text.trim().is_empty())
@@ -346,6 +432,34 @@ fn details(frame: &mut Frame<'_>, screen: &mut Screen, area: Rect) {
             .collect(),
         &mut screen.details_scroll,
         &mut screen.details_max_scroll,
+    );
+}
+
+fn result(frame: &mut Frame<'_>, screen: &mut Screen, area: Rect) {
+    let Some(call) = &mut screen.last_call else {
+        return;
+    };
+    let border = block(
+        format!("{}: {}", call.label(), single_line(&call.tool)),
+        screen.focus != Focus::Logs,
+    );
+    let style = if call.failed() {
+        Style::default().fg(Color::Red)
+    } else {
+        Style::default()
+    };
+    let text = multiline(&call.text);
+    let lines = text
+        .lines()
+        .map(|line| Line::styled(line.to_owned(), style))
+        .collect();
+    scrollable(
+        frame,
+        area,
+        border.style(style),
+        lines,
+        &mut call.scroll,
+        &mut call.max_scroll,
     );
 }
 
@@ -574,6 +688,66 @@ mod tests {
             screen.switch_view(View::Server);
             render(&mut screen, width, height)?;
             screen.switch_view(View::Tools);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn result_failure_labels_colors_and_sanitized_text()
+    -> Result<(), std::convert::Infallible> {
+        use crate::result::CallDisplay;
+        use rmcp::model::{CallToolResult, ContentBlock};
+        for flag in [None, Some(false), Some(true)] {
+            let mut screen = screen();
+            let mut result = CallToolResult::success(vec![ContentBlock::text(
+                "line\nnext\u{1b}[31m",
+            )]);
+            result.is_error = flag;
+            let mut call =
+                CallDisplay::new(mcpv::client::CallId(1), "ping".into());
+            call.finish(
+                Ok(Arc::new(result)),
+                std::time::Duration::from_millis(10),
+            );
+            screen.last_call = Some(call);
+            screen.mode = Mode::Result;
+            let (text, red) = render(&mut screen, 100, 24)?;
+            assert!(text.contains(if flag == Some(true) {
+                "TOOL ERROR"
+            } else {
+                "SUCCESS"
+            }));
+            assert_eq!(red, flag == Some(true));
+            assert!(text.contains("next [31m"));
+            assert!(!text.contains('\u{1b}'));
+            assert!(!text.contains("Return JSON"));
+            for (width, height) in [(50, 12), (32, 8), (1, 1), (0, 0)] {
+                render(&mut screen, width, height)?;
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn full_body_editor_hides_browser_logs_and_shows_validation_error()
+    -> Result<(), std::convert::Infallible> {
+        let mut screen = screen();
+        screen.logs_open = true;
+        screen.open_editor("ping".into());
+        let (text, _) = render(&mut screen, 100, 24)?;
+        assert!(
+            text.contains("Arguments: ping") && text.contains("F5/Ctrl-Enter")
+        );
+        assert!(!text.contains("Return JSON") && !text.contains("Activity"));
+        if let Some(editor) = &mut screen.editor {
+            editor.replace("{".into());
+            editor.error = editor.arguments().err().map(Arc::new);
+        }
+        let (text, red) = render(&mut screen, 50, 12)?;
+        assert!(text.contains("ERROR: invalid JSON"));
+        assert!(red);
+        for (width, height) in [(32, 8), (1, 1), (0, 0)] {
+            render(&mut screen, width, height)?;
         }
         Ok(())
     }

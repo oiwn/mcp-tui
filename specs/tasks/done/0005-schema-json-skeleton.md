@@ -1,6 +1,6 @@
 ---
 id: 0005-schema-json-skeleton
-status: approval
+status: done
 scope: [src/schema.rs, src/lib.rs]
 created: 2026-10-13
 source: User mcpv MVP brief; Rust 2024 and toolchain 1.99
@@ -50,3 +50,5 @@ Approved against the plan and two-file code scope. The public library helper is 
 - 2026-10-16 advance in-progress/implement → in-progress/verify
 - 2026-10-16 advance in-progress/verify → in-progress/review
 - 2026-10-16 advance in-progress/review → approval
+- 2026-10-16 approved: ok let’s close 0005 as done and plan 0006
+- 2026-10-16 advance approval → done

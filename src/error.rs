@@ -29,6 +29,12 @@ impl std::fmt::Display for Operation {
 
 #[derive(Debug, Error)]
 pub enum AppError {
+    #[error("another tool call is already active")]
+    CallBusy,
+    #[error("tools are not ready for calls; connect and load the catalog first")]
+    CallNotReady,
+    #[error("tool call counter exhausted")]
+    CallIdExhausted,
     #[error("invalid JSON arguments: {0}")]
     ArgumentJson(#[source] serde_json::Error),
     #[error("arguments must be a JSON object")]

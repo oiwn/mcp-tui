@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     process::ExitCode,
     sync::Arc,
     time::{Duration, Instant},
@@ -20,6 +20,20 @@ use ratatui::widgets::ListState;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::{cli::Args, terminal::TerminalGuard, ui};
+use crate::{editor::Editor, result::CallDisplay};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Browse,
+    Editor,
+    Result,
+}
+
+#[derive(Default)]
+pub struct Metrics {
+    pub count: u64,
+    pub latency: Option<Duration>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -48,6 +62,11 @@ pub struct LogEntry {
 }
 
 pub struct Screen {
+    pub mode: Mode,
+    pub editor: Option<Editor>,
+    pub drafts: HashMap<String, String>,
+    pub last_call: Option<CallDisplay>,
+    pub metrics: HashMap<String, Metrics>,
     pub url: String,
     pub client: ClientState,
     pub focus: Focus,
@@ -70,6 +89,11 @@ pub struct Screen {
 impl Screen {
     pub fn new(url: String) -> Self {
         Self {
+            mode: Mode::Browse,
+            editor: None,
+            drafts: HashMap::new(),
+            last_call: None,
+            metrics: HashMap::new(),
             url,
             client: ClientState {
                 generation: 1,
@@ -137,6 +161,7 @@ impl Screen {
         self.summary_scroll = 0;
         self.summary_max_scroll = 0;
         self.reset_details();
+        self.clear_calls();
         self.local_error = None;
         self.log(
             Level::Info,
@@ -149,6 +174,76 @@ impl Screen {
             return;
         }
         let new_generation = event.generation > self.client.generation;
+        if new_generation {
+            self.clear_calls();
+        }
+        match &event.kind {
+            EventKind::CallStarted { id, tool } => {
+                if let Some(call) = &mut self.last_call
+                    && call.id == *id
+                    && call.tool == *tool
+                    && call.pending()
+                    && call.started.is_none()
+                {
+                    call.started = Some(Instant::now());
+                    let metrics = self.metrics.entry(tool.clone()).or_default();
+                    metrics.count = metrics.count.saturating_add(1);
+                    self.log(Level::Info, format!("Calling {tool}"));
+                }
+                return;
+            }
+            EventKind::CallCompleted {
+                id,
+                tool,
+                elapsed,
+                result,
+            } => {
+                if let Some(call) = &mut self.last_call
+                    && call.id == *id
+                    && call.tool == *tool
+                    && call.pending()
+                {
+                    call.finish(result.clone(), *elapsed);
+                    self.metrics.entry(tool.clone()).or_default().latency =
+                        Some(*elapsed);
+                    let level = if call.failed() {
+                        Level::Error
+                    } else {
+                        Level::Info
+                    };
+                    let message = format!(
+                        "{tool}: {} ({:.1} ms){}",
+                        call.label(),
+                        elapsed.as_secs_f64() * 1000.0,
+                        result
+                            .as_ref()
+                            .err()
+                            .map(|error| format!(": {error}"))
+                            .unwrap_or_default()
+                    );
+                    self.log(level, message);
+                }
+                return;
+            }
+            EventKind::Disconnected(error) => {
+                if let Some(call) = &mut self.last_call
+                    && call.pending()
+                {
+                    let elapsed = call
+                        .started
+                        .map_or(Duration::ZERO, |time| time.elapsed());
+                    call.finish(
+                        Err(error.clone().unwrap_or_else(|| {
+                            Arc::new(AppError::ConnectionClosed)
+                        })),
+                        elapsed,
+                    );
+                    self.metrics.entry(call.tool.clone()).or_default().latency =
+                        Some(elapsed);
+                }
+            }
+            _ => {}
+        }
         let selected_name = if new_generation {
             None
         } else {
@@ -181,6 +276,9 @@ impl Screen {
                 (Level::Error, error.to_string())
             }
             EventKind::Disconnected(None) => (Level::Info, "Disconnected".into()),
+            EventKind::CallStarted { .. } | EventKind::CallCompleted { .. } => {
+                return;
+            }
         };
         self.client.apply(event);
         if new_generation || catalog_changed {
@@ -206,6 +304,95 @@ impl Screen {
         self.log(level, message);
     }
 
+    fn clear_calls(&mut self) {
+        self.browse();
+        self.editor = None;
+        self.drafts.clear();
+        self.last_call = None;
+        self.metrics.clear();
+    }
+
+    pub fn pending(&self) -> bool {
+        self.last_call.as_ref().is_some_and(CallDisplay::pending)
+    }
+
+    pub fn skeleton(&self, name: &str) -> Result<String> {
+        let CatalogState::Ready(tools) = &self.client.catalog else {
+            return Err(AppError::CallNotReady);
+        };
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name == name)
+            .ok_or_else(|| AppError::ToolNotFound(name.into()))?;
+        serde_json::to_string_pretty(&mcpv::schema::object_skeleton(
+            &serde_json::Value::Object((*tool.input_schema).clone()),
+        ))
+        .map_err(AppError::Serialization)
+    }
+
+    pub fn open_editor(&mut self, tool: String) {
+        if self.client.connection != ConnectionState::Connected {
+            self.fail(AppError::CallNotReady);
+            return;
+        }
+        match self
+            .drafts
+            .get(&tool)
+            .cloned()
+            .map(Ok)
+            .unwrap_or_else(|| self.skeleton(&tool))
+        {
+            Ok(text) => {
+                self.editor = Some(Editor::new(tool, text));
+                self.mode = Mode::Editor;
+            }
+            Err(error) => self.fail(error),
+        }
+    }
+
+    pub fn save_editor(&mut self) {
+        if let Some(editor) = self.editor.take() {
+            self.drafts.insert(editor.tool, editor.text);
+        }
+        self.browse();
+    }
+
+    fn browse(&mut self) {
+        self.mode = Mode::Browse;
+        self.focus = match self.view {
+            View::Tools => Focus::Tools,
+            View::Server => Focus::Summary,
+        };
+        self.previous_focus = self.focus;
+    }
+
+    fn submit(&mut self, handle: &mut ClientHandle) {
+        let Some(editor) = &mut self.editor else {
+            return;
+        };
+        let arguments =
+            if self.last_call.as_ref().is_some_and(CallDisplay::pending) {
+                Err(AppError::CallBusy)
+            } else {
+                editor.arguments()
+            };
+        match arguments.and_then(|arguments| {
+            handle.call_tool(editor.tool.clone(), arguments)
+        }) {
+            Ok(id) => {
+                let tool = editor.tool.clone();
+                self.save_editor();
+                self.last_call = Some(CallDisplay::new(id, tool));
+                self.mode = Mode::Result;
+                self.focus = match self.view {
+                    View::Tools => Focus::Tools,
+                    View::Server => Focus::Summary,
+                };
+            }
+            Err(error) => editor.error = Some(Arc::new(error)),
+        }
+    }
+
     pub fn cycle_focus(&mut self, reverse: bool) {
         let mut panes = match self.view {
             View::Tools => vec![Focus::Tools, Focus::Details],
@@ -223,6 +410,7 @@ impl Screen {
     }
 
     pub fn switch_view(&mut self, view: View) {
+        self.mode = Mode::Browse;
         self.view = view;
         self.focus = match view {
             View::Tools => Focus::Tools,
@@ -256,6 +444,22 @@ impl Screen {
     }
 
     pub fn navigate(&mut self, key: KeyCode) {
+        if self.mode == Mode::Result && self.focus != Focus::Logs {
+            if let Some(call) = &mut self.last_call {
+                call.scroll = match key {
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        call.scroll.saturating_sub(1)
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        call.scroll.saturating_add(1).min(call.max_scroll)
+                    }
+                    KeyCode::Char('g') => 0,
+                    KeyCode::Char('G') => call.max_scroll,
+                    _ => call.scroll,
+                };
+            }
+            return;
+        }
         let (position, last) = match self.focus {
             Focus::Tools => {
                 let CatalogState::Ready(tools) = &self.client.catalog else {
@@ -304,16 +508,18 @@ enum Action {
     None,
     Quit(ExitCode),
     Reconnect,
+    Submit,
 }
 
 fn key_action(screen: &mut Screen, key: KeyEvent) -> Action {
     if key.kind == KeyEventKind::Release {
         return Action::None;
     }
-    let navigation = matches!(
-        key.code,
-        KeyCode::Up | KeyCode::Down | KeyCode::Char('j' | 'k' | 'g' | 'G')
-    );
+    let navigation = screen.mode == Mode::Editor
+        || matches!(
+            key.code,
+            KeyCode::Up | KeyCode::Down | KeyCode::Char('j' | 'k' | 'g' | 'G')
+        );
     if key.kind == KeyEventKind::Repeat && !navigation {
         return Action::None;
     }
@@ -322,6 +528,48 @@ fn key_action(screen: &mut Screen, key: KeyEvent) -> Action {
     {
         return Action::Quit(ExitCode::from(130));
     }
+    if screen.mode == Mode::Editor {
+        match key.code {
+            KeyCode::F(5) => return Action::Submit,
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                return Action::Submit;
+            }
+            KeyCode::Esc => screen.save_editor(),
+            KeyCode::Char('u')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                if let Some(editor) = &mut screen.editor {
+                    editor.replace("{}".into());
+                }
+            }
+            KeyCode::Char('r')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                if let Some(tool) =
+                    screen.editor.as_ref().map(|editor| editor.tool.clone())
+                {
+                    match screen.skeleton(&tool) {
+                        Ok(text) => {
+                            if let Some(editor) = &mut screen.editor {
+                                editor.replace(text);
+                            }
+                        }
+                        Err(error) => {
+                            if let Some(editor) = &mut screen.editor {
+                                editor.error = Some(Arc::new(error));
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {
+                if let Some(editor) = &mut screen.editor {
+                    editor.key(key);
+                }
+            }
+        }
+        return Action::None;
+    }
     if key
         .modifiers
         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -329,6 +577,28 @@ fn key_action(screen: &mut Screen, key: KeyEvent) -> Action {
         return Action::None;
     }
     match key.code {
+        KeyCode::Esc => {
+            screen.browse();
+            Action::None
+        }
+        KeyCode::Char('v') if screen.last_call.is_some() => {
+            screen.mode = Mode::Result;
+            screen.focus = Focus::Tools;
+            Action::None
+        }
+        KeyCode::Enter if screen.focus != Focus::Logs => {
+            let tool = if screen.mode == Mode::Result {
+                screen.last_call.as_ref().map(|call| call.tool.clone())
+            } else if screen.view == View::Tools {
+                screen.selected_tool().map(|tool| tool.name.to_string())
+            } else {
+                None
+            };
+            if let Some(tool) = tool {
+                screen.open_editor(tool);
+            }
+            Action::None
+        }
         KeyCode::Char('1') => {
             screen.switch_view(View::Tools);
             Action::None
@@ -344,11 +614,31 @@ fn key_action(screen: &mut Screen, key: KeyEvent) -> Action {
             Action::None
         }
         KeyCode::Tab => {
-            screen.cycle_focus(false);
+            if screen.mode == Mode::Result {
+                if screen.logs_open {
+                    screen.focus = if screen.focus == Focus::Logs {
+                        Focus::Tools
+                    } else {
+                        Focus::Logs
+                    };
+                }
+            } else {
+                screen.cycle_focus(false);
+            }
             Action::None
         }
         KeyCode::BackTab => {
-            screen.cycle_focus(true);
+            if screen.mode == Mode::Result {
+                if screen.logs_open {
+                    screen.focus = if screen.focus == Focus::Logs {
+                        Focus::Tools
+                    } else {
+                        Focus::Logs
+                    };
+                }
+            } else {
+                screen.cycle_focus(true);
+            }
             Action::None
         }
         code => {
@@ -418,6 +708,7 @@ async fn event_loop(
             event = input.next() => {
                 match event.ok_or(AppError::InputClosed)?? {
                     Event::Key(key) => match key_action(&mut screen, key) {
+                        Action::Submit => if let Some(handle) = handle.as_mut() { screen.submit(handle); },
                         Action::Quit(code) => return Ok(code),
                         Action::Reconnect => {
                             if worker_closed {
@@ -436,6 +727,7 @@ async fn event_loop(
                         Action::None => {},
                     },
                     Event::Resize(_,_) => {terminal.get()?.autoresize()?;},
+                    Event::Paste(text) if screen.mode == Mode::Editor => if let Some(editor) = &mut screen.editor { editor.insert(&text); },
                     _ => {},
                 }
                 dirty = true;
@@ -443,7 +735,7 @@ async fn event_loop(
             event = events.recv(), if !worker_closed => {
                 match event {
                     Some(event) => screen.apply(event),
-                    None => {worker_closed = true;screen.client.connection = ConnectionState::Disconnected;screen.fail(AppError::ChannelClosed);},
+                    None => {worker_closed = true;screen.apply(ClientEvent { generation: screen.client.generation, kind: EventKind::Disconnected(Some(Arc::new(AppError::ChannelClosed))) });},
                 }
                 dirty = true;
             },
@@ -620,6 +912,181 @@ mod tests {
         assert!(screen.log_follow);
         screen.log(Level::Info, "tail");
         assert_eq!(screen.log_scroll, 997);
+    }
+
+    #[test]
+    fn editor_shortcuts_drafts_and_reset() {
+        let mut screen = ready();
+        screen.client.connection = ConnectionState::Connected;
+        screen.open_editor("first".into());
+        for ch in "qrljkgG12".chars() {
+            assert!(matches!(
+                key_action(
+                    &mut screen,
+                    KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)
+                ),
+                Action::None
+            ));
+        }
+        assert_eq!(screen.mode, Mode::Editor);
+        assert!(!screen.logs_open);
+        assert_eq!(
+            screen.editor.as_ref().map(|editor| editor.text.as_str()),
+            Some("qrljkgG12{}")
+        );
+        key_action(
+            &mut screen,
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(
+            screen.editor.as_ref().map(|editor| editor.text.as_str()),
+            Some("{}")
+        );
+        if let Some(editor) = &mut screen.editor {
+            editor.replace("{\"text\":\"draft\"}".into());
+        }
+        key_action(&mut screen, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        screen.open_editor("first".into());
+        assert_eq!(
+            screen.editor.as_ref().map(|editor| editor.text.as_str()),
+            Some("{\"text\":\"draft\"}")
+        );
+        key_action(
+            &mut screen,
+            KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(
+            screen.editor.as_ref().map(|editor| editor.text.as_str()),
+            Some("{}")
+        );
+        assert!(matches!(
+            key_action(
+                &mut screen,
+                KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE)
+            ),
+            Action::Submit
+        ));
+        assert!(matches!(
+            key_action(
+                &mut screen,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)
+            ),
+            Action::Submit
+        ));
+        assert!(matches!(
+            key_action(
+                &mut screen,
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)
+            ),
+            Action::Quit(_)
+        ));
+        screen.reconnect(2);
+        assert!(screen.drafts.is_empty() && screen.editor.is_none());
+        assert_eq!(screen.mode, Mode::Browse);
+    }
+
+    #[tokio::test]
+    async fn invalid_and_busy_submissions_preserve_buffer() -> Result<()> {
+        let (mut client, _events) = ClientHandle::spawn(
+            "http://127.0.0.1:1/mcp",
+            ClientOptions::default(),
+        )?;
+        let mut screen = ready();
+        screen.client.connection = ConnectionState::Connected;
+        screen.open_editor("first".into());
+        for invalid in ["{", "[]"] {
+            if let Some(editor) = &mut screen.editor {
+                editor.replace(invalid.into());
+            }
+            screen.submit(&mut client);
+            assert!(screen.last_call.is_none() && screen.metrics.is_empty());
+            assert_eq!(screen.mode, Mode::Editor);
+            assert!(screen.editor.as_ref().is_some_and(|editor| editor.text
+                == invalid
+                && editor.error.is_some()));
+        }
+        screen.last_call =
+            Some(CallDisplay::new(mcpv::client::CallId(1), "first".into()));
+        if let Some(editor) = &mut screen.editor {
+            editor.replace("{}".into());
+        }
+        screen.submit(&mut client);
+        assert!(screen.editor.as_ref().is_some_and(|editor| matches!(
+            editor.error.as_deref(),
+            Some(AppError::CallBusy)
+        )));
+        client.shutdown().await
+    }
+
+    #[test]
+    fn completion_preserves_browsing_and_rejects_stale_ids() {
+        use mcpv::client::CallId;
+        use rmcp::model::CallToolResult;
+        let mut screen = ready();
+        screen.switch_view(View::Server);
+        screen.last_call = Some(CallDisplay::new(CallId(1), "first".into()));
+        let started = || ClientEvent {
+            generation: 1,
+            kind: EventKind::CallStarted {
+                id: CallId(1),
+                tool: "first".into(),
+            },
+        };
+        screen.apply(started());
+        screen.apply(started());
+        assert_eq!(screen.metrics["first"].count, 1);
+        let completed = |id| ClientEvent {
+            generation: 1,
+            kind: EventKind::CallCompleted {
+                id,
+                tool: "first".into(),
+                elapsed: Duration::from_millis(25),
+                result: Ok(Arc::new(CallToolResult::error(vec![]))),
+            },
+        };
+        screen.apply(completed(CallId(2)));
+        assert!(screen.pending());
+        screen.apply(completed(CallId(1)));
+        assert_eq!(screen.mode, Mode::Browse);
+        assert_eq!(
+            screen.metrics["first"].latency,
+            Some(Duration::from_millis(25))
+        );
+        assert!(screen.last_call.as_ref().is_some_and(|call| call.failed()));
+        key_action(
+            &mut screen,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+        );
+        assert_eq!(screen.mode, Mode::Result);
+        key_action(&mut screen, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(screen.focus, Focus::Summary);
+        screen.reconnect(2);
+        screen.apply(completed(CallId(1)));
+        assert!(screen.metrics.is_empty() && screen.last_call.is_none());
+        assert_eq!(screen.focus, Focus::Summary);
+    }
+
+    #[test]
+    fn disconnect_finishes_pending_result_and_retains_draft() {
+        let mut screen = ready();
+        screen.drafts.insert("first".into(), "{}".into());
+        let mut call = CallDisplay::new(mcpv::client::CallId(1), "first".into());
+        call.started = Some(Instant::now());
+        screen.last_call = Some(call);
+        screen.apply(ClientEvent {
+            generation: 1,
+            kind: EventKind::Disconnected(Some(Arc::new(
+                AppError::ConnectionClosed,
+            ))),
+        });
+        assert!(!screen.pending());
+        assert!(
+            screen
+                .last_call
+                .as_ref()
+                .is_some_and(|call| call.label() == "EXECUTION ERROR")
+        );
+        assert_eq!(screen.drafts.get("first").map(String::as_str), Some("{}"));
     }
 
     #[test]

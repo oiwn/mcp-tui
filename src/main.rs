@@ -4,7 +4,9 @@ use clap::Parser;
 
 mod app;
 mod cli;
+mod editor;
 mod headless;
+mod result;
 mod terminal;
 mod ui;
 

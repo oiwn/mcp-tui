@@ -1,4 +1,7 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use rmcp::{
     RoleClient, ServiceExt,
@@ -8,7 +11,10 @@ use rmcp::{
     service::{QuitReason, RunningService},
     transport::StreamableHttpClientTransport,
 };
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::{
+    sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch},
+    task::JoinHandle,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::{AppError, Operation, Result};
@@ -17,6 +23,7 @@ use crate::error::{AppError, Operation, Result};
 pub struct ClientOptions {
     pub initialize_timeout: Duration,
     pub catalog_timeout: Duration,
+    pub call_timeout: Duration,
     pub shutdown_timeout: Duration,
 }
 
@@ -25,6 +32,7 @@ impl Default for ClientOptions {
         Self {
             initialize_timeout: Duration::from_secs(10),
             catalog_timeout: Duration::from_secs(10),
+            call_timeout: Duration::from_secs(10),
             shutdown_timeout: Duration::from_secs(2),
         }
     }
@@ -54,6 +62,35 @@ pub enum EventKind {
     Catalog(CatalogState),
     Disconnected(Option<Arc<AppError>>),
     CleanupFailed(Arc<AppError>),
+    CallStarted {
+        id: CallId,
+        tool: String,
+    },
+    CallCompleted {
+        id: CallId,
+        tool: String,
+        elapsed: Duration,
+        result: CallOutcome,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CallId(pub u64);
+
+pub type CallOutcome = std::result::Result<Arc<CallToolResult>, Arc<AppError>>;
+
+struct CallRequest {
+    id: CallId,
+    tool: String,
+    arguments: serde_json::Map<String, serde_json::Value>,
+    permit: OwnedSemaphorePermit,
+}
+
+#[derive(Clone)]
+struct Dispatcher {
+    generation: u64,
+    sender: mpsc::Sender<CallRequest>,
+    available: Arc<Semaphore>,
 }
 
 #[derive(Debug, Clone)]
@@ -103,6 +140,7 @@ impl ClientState {
                 self.error = error;
             }
             EventKind::CleanupFailed(error) => self.error = Some(error),
+            EventKind::CallStarted { .. } | EventKind::CallCompleted { .. } => {}
         }
         true
     }
@@ -118,6 +156,8 @@ pub struct ClientHandle {
     worker: Option<JoinHandle<Result<()>>>,
     generation: u64,
     shutdown_timeout: Duration,
+    dispatcher: watch::Receiver<Option<Dispatcher>>,
+    next_call_id: u64,
 }
 
 impl ClientHandle {
@@ -129,12 +169,14 @@ impl ClientHandle {
         let (commands, receiver) = mpsc::channel(16);
         let (events, event_receiver) = mpsc::unbounded_channel();
         let shutdown = CancellationToken::new();
+        let (ready, dispatcher) = watch::channel(None);
         let worker = tokio::spawn(worker(
             parsed,
             options,
             receiver,
             events,
             shutdown.clone(),
+            ready,
         ));
         Ok((
             Self {
@@ -143,6 +185,8 @@ impl ClientHandle {
                 worker: Some(worker),
                 generation: 1,
                 shutdown_timeout: options.shutdown_timeout,
+                dispatcher,
+                next_call_id: 1,
             },
             event_receiver,
         ))
@@ -181,6 +225,41 @@ impl ClientHandle {
         }
         Ok(())
     }
+
+    /// Reserve the single active-call slot and submit without blocking input.
+    pub fn call_tool(
+        &mut self,
+        tool: String,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallId> {
+        let dispatcher = self
+            .dispatcher
+            .borrow()
+            .clone()
+            .filter(|ready| ready.generation == self.generation)
+            .ok_or(AppError::CallNotReady)?;
+        let permit = dispatcher
+            .available
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| AppError::CallBusy)?;
+        let next = self
+            .next_call_id
+            .checked_add(1)
+            .ok_or(AppError::CallIdExhausted)?;
+        let id = CallId(self.next_call_id);
+        dispatcher
+            .sender
+            .try_send(CallRequest {
+                id,
+                tool,
+                arguments,
+                permit,
+            })
+            .map_err(|_| AppError::CallNotReady)?;
+        self.next_call_id = next;
+        Ok(id)
+    }
 }
 
 impl Drop for ClientHandle {
@@ -208,6 +287,7 @@ impl Attempt {
         options: ClientOptions,
         events: mpsc::UnboundedSender<ClientEvent>,
         generation: u64,
+        ready: watch::Sender<Option<Dispatcher>>,
     ) -> Self {
         let cancellation = CancellationToken::new();
         let task = tokio::spawn(run_generation(
@@ -216,6 +296,7 @@ impl Attempt {
             events,
             generation,
             cancellation.clone(),
+            ready,
         ));
         Self { cancellation, task }
     }
@@ -260,6 +341,7 @@ async fn worker(
     mut commands: mpsc::Receiver<Command>,
     events: mpsc::UnboundedSender<ClientEvent>,
     shutdown: CancellationToken,
+    ready: watch::Sender<Option<Dispatcher>>,
 ) -> Result<()> {
     let mut generation = 1;
     let mut attempt = Some(Attempt::start(
@@ -267,6 +349,7 @@ async fn worker(
         options,
         events.clone(),
         generation,
+        ready.clone(),
     ));
     loop {
         tokio::select! {
@@ -275,12 +358,13 @@ async fn worker(
             _ = events.closed() => break,
             command = commands.recv() => match command {
                 Some(Command::Reconnect(next)) => {
+                    ready.send_replace(None);
                     if let Some(active) = attempt.take()
                         && let Err(error) = active.stop(options.shutdown_timeout).await {
                         emit(&events, generation, EventKind::CleanupFailed(Arc::new(error)));
                     }
                     generation = next;
-                    attempt = Some(Attempt::start(url.clone(), options, events.clone(), generation));
+                    attempt = Some(Attempt::start(url.clone(), options, events.clone(), generation, ready.clone()));
                 }
                 None => break,
             },
@@ -291,6 +375,7 @@ async fn worker(
                 }
             } => {
                 attempt.take();
+                ready.send_replace(None);
                 let error = match result {
                     Ok(Ok(())) => None,
                     Ok(Err(error)) => Some(Arc::new(error)),
@@ -300,6 +385,7 @@ async fn worker(
             }
         }
     }
+    ready.send_replace(None);
     if let Some(active) = attempt.take() {
         active.stop(options.shutdown_timeout).await?;
     }
@@ -365,7 +451,15 @@ pub async fn call_tool(
     params: CallToolRequestParams,
     deadline: Duration,
 ) -> Result<CallToolResult> {
-    tokio::time::timeout(deadline, service.call_tool(params))
+    call_on_peer(service.peer(), params, deadline).await
+}
+
+async fn call_on_peer(
+    peer: &rmcp::service::Peer<RoleClient>,
+    params: CallToolRequestParams,
+    deadline: Duration,
+) -> Result<CallToolResult> {
+    tokio::time::timeout(deadline, peer.call_tool(params))
         .await
         .map_err(|_| AppError::Timeout {
             operation: Operation::CallTool,
@@ -380,6 +474,7 @@ async fn run_generation(
     events: mpsc::UnboundedSender<ClientEvent>,
     generation: u64,
     cancellation: CancellationToken,
+    ready: watch::Sender<Option<Dispatcher>>,
 ) -> Result<()> {
     emit(&events, generation, EventKind::Connecting);
     let service = tokio::select! {
@@ -392,14 +487,18 @@ async fn run_generation(
     let operation = async {
         let info = peer.peer_info().ok_or(AppError::MissingMetadata)?;
         emit(&events, generation, EventKind::Connected(info.clone()));
+        let mut callable = false;
         if info.capabilities.tools.is_some() {
             let tools = list_all_tools(&peer, options.catalog_timeout).await;
             match tools {
-                Ok(tools) => emit(
-                    &events,
-                    generation,
-                    EventKind::Catalog(CatalogState::Ready(Arc::new(tools))),
-                ),
+                Ok(tools) => {
+                    callable = true;
+                    emit(
+                        &events,
+                        generation,
+                        EventKind::Catalog(CatalogState::Ready(Arc::new(tools))),
+                    );
+                }
                 Err(
                     error @ AppError::Request(rmcp::ServiceError::McpError(_)),
                 ) => emit(
@@ -416,7 +515,67 @@ async fn run_generation(
                 EventKind::Catalog(CatalogState::Unsupported),
             );
         }
-        std::future::pending::<Result<()>>().await
+        if !callable {
+            return std::future::pending::<Result<()>>().await;
+        }
+        let (sender, mut calls) = mpsc::channel::<CallRequest>(1);
+        ready.send_replace(Some(Dispatcher {
+            generation,
+            sender,
+            available: Arc::new(Semaphore::new(1)),
+        }));
+        while let Some(request) = calls.recv().await {
+            let CallRequest {
+                id,
+                tool,
+                arguments,
+                permit,
+            } = request;
+            emit(
+                &events,
+                generation,
+                EventKind::CallStarted {
+                    id,
+                    tool: tool.clone(),
+                },
+            );
+            let started = Instant::now();
+            let result = call_on_peer(
+                &peer,
+                CallToolRequestParams::new(tool.clone())
+                    .with_arguments(arguments),
+                options.call_timeout,
+            )
+            .await;
+            let elapsed = started.elapsed();
+            let result = result.map(Arc::new).map_err(Arc::new);
+            let fatal = result
+                .as_ref()
+                .err()
+                .filter(|error| {
+                    !matches!(
+                        error.as_ref(),
+                        AppError::Timeout { .. }
+                            | AppError::Request(rmcp::ServiceError::McpError(_))
+                    )
+                })
+                .cloned();
+            drop(permit);
+            emit(
+                &events,
+                generation,
+                EventKind::CallCompleted {
+                    id,
+                    tool,
+                    elapsed,
+                    result,
+                },
+            );
+            if let Some(error) = fatal {
+                return Err(AppError::Reported(error));
+            }
+        }
+        Ok(())
     };
     session
         .run(operation, &cancellation, options.shutdown_timeout)

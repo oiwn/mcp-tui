@@ -5,8 +5,8 @@ use std::{sync::Arc, time::Duration};
 
 use mcpv::{
     client::{
-        CatalogState, ClientEvent, ClientHandle, ClientOptions, ClientState,
-        ConnectionState, EventKind,
+        CallId, CallOutcome, CatalogState, ClientEvent, ClientHandle,
+        ClientOptions, ClientState, ConnectionState, EventKind,
     },
     error::{AppError, Operation},
 };
@@ -57,6 +57,173 @@ async fn ready(
             return Ok(state);
         }
     }
+}
+
+async fn completed(
+    events: &mut UnboundedReceiver<ClientEvent>,
+    id: CallId,
+    generation: u64,
+) -> Result<(Duration, CallOutcome), TestError> {
+    let mut started = false;
+    loop {
+        let event = event(events).await?;
+        if event.generation != generation {
+            continue;
+        }
+        match event.kind {
+            EventKind::CallStarted { id: received, .. } if received == id => {
+                started = true
+            }
+            EventKind::CallCompleted {
+                id: received,
+                elapsed,
+                result,
+                ..
+            } if received == id => {
+                assert!(started, "completion must follow dispatch");
+                return Ok((elapsed, result));
+            }
+            EventKind::Disconnected(_) => return Err(TestError::Closed),
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test]
+async fn worker_calls_success_content_and_protocol_failures_in_both_modes()
+-> Result<(), TestError> {
+    for stateful in [false, true] {
+        let fixture = Fixture::start(
+            ([127, 0, 0, 1], 0).into(),
+            FixtureConfig {
+                stateful,
+                ..Default::default()
+            },
+        )
+        .await?;
+        let (mut client, mut events) =
+            ClientHandle::spawn(&fixture.url(), ClientOptions::default())?;
+        ready(&mut events, 1).await?;
+        let id = client.call_tool("ping".into(), serde_json::Map::new())?;
+        let (_, result) = completed(&mut events, id, 1).await?;
+        assert!(result.is_ok_and(|result| result.is_error != Some(true)));
+        let id = client.call_tool(
+            "echo".into(),
+            serde_json::json!({"text":"hello","fail":true})
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+        )?;
+        let (_, result) = completed(&mut events, id, 1).await?;
+        assert!(result.is_ok_and(|result| result.is_error == Some(true)));
+        let id = client.call_tool("unknown".into(), serde_json::Map::new())?;
+        let (_, result) = completed(&mut events, id, 1).await?;
+        assert!(result.is_err_and(|error| matches!(
+            error.as_ref(),
+            AppError::Request(rmcp::ServiceError::McpError(_))
+        )));
+        let id = client.call_tool("ping".into(), serde_json::Map::new())?;
+        assert!(completed(&mut events, id, 1).await?.1.is_ok());
+        client.shutdown().await?;
+        fixture.stop().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn worker_single_call_guard_timeout_and_recovery() -> Result<(), TestError>
+{
+    let fixture =
+        Fixture::start(([127, 0, 0, 1], 0).into(), FixtureConfig::default())
+            .await?;
+    let (mut client, mut events) = ClientHandle::spawn(
+        &fixture.url(),
+        ClientOptions {
+            call_timeout: Duration::from_millis(50),
+            ..Default::default()
+        },
+    )?;
+    assert!(matches!(
+        client.call_tool("ping".into(), serde_json::Map::new()),
+        Err(AppError::CallNotReady)
+    ));
+    ready(&mut events, 1).await?;
+    let id = client.call_tool("slow".into(), serde_json::Map::new())?;
+    assert!(matches!(
+        client.call_tool("ping".into(), serde_json::Map::new()),
+        Err(AppError::CallBusy)
+    ));
+    let (elapsed, result) = completed(&mut events, id, 1).await?;
+    assert!(elapsed >= Duration::from_millis(50));
+    assert!(result.is_err_and(|error| matches!(
+        error.as_ref(),
+        AppError::Timeout {
+            operation: Operation::CallTool,
+            ..
+        }
+    )));
+    let id = client.call_tool("ping".into(), serde_json::Map::new())?;
+    assert!(completed(&mut events, id, 1).await?.1.is_ok());
+    client.shutdown().await?;
+    fixture.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn worker_reconnect_and_shutdown_interrupt_pending_calls()
+-> Result<(), TestError> {
+    let fixture =
+        Fixture::start(([127, 0, 0, 1], 0).into(), FixtureConfig::default())
+            .await?;
+    let (mut client, mut events) =
+        ClientHandle::spawn(&fixture.url(), ClientOptions::default())?;
+    ready(&mut events, 1).await?;
+    let arguments = serde_json::json!({"delay_ms":5000})
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let retired = client.call_tool("slow".into(), arguments.clone())?;
+    assert!(
+        matches!(event(&mut events).await?.kind, EventKind::CallStarted { id, .. } if id == retired)
+    );
+    let started = std::time::Instant::now();
+    let generation = client.reconnect()?;
+    assert!(matches!(
+        client.call_tool("ping".into(), serde_json::Map::new()),
+        Err(AppError::CallNotReady)
+    ));
+    ready(&mut events, generation).await?;
+    assert!(started.elapsed() < Duration::from_secs(3));
+    let id = client.call_tool("ping".into(), serde_json::Map::new())?;
+    assert_ne!(id, retired);
+    assert!(completed(&mut events, id, generation).await?.1.is_ok());
+    client.call_tool("slow".into(), arguments)?;
+    assert!(matches!(
+        event(&mut events).await?.kind,
+        EventKind::CallStarted { .. }
+    ));
+    let started = std::time::Instant::now();
+    client.shutdown().await?;
+    assert!(started.elapsed() < Duration::from_secs(3));
+    fixture.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn worker_reports_transport_failure_on_a_stopped_server_call()
+-> Result<(), TestError> {
+    let fixture =
+        Fixture::start(([127, 0, 0, 1], 0).into(), FixtureConfig::default())
+            .await?;
+    let (mut client, mut events) =
+        ClientHandle::spawn(&fixture.url(), ClientOptions::default())?;
+    ready(&mut events, 1).await?;
+    fixture.stop().await?;
+    let id = client.call_tool("ping".into(), serde_json::Map::new())?;
+    let (_, result) = completed(&mut events, id, 1).await?;
+    assert!(result.is_err());
+    client.shutdown().await?;
+    Ok(())
 }
 
 #[tokio::test]

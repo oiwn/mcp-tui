@@ -14,7 +14,7 @@ cargo run --locked -- http://127.0.0.1:7400/mcp
 
 The CLI accepts one required absolute HTTP/HTTPS server URL and standard help/version flags. Without a command it opens a persistent terminal screen, requiring interactive stdin/stdout. It initializes the server and lists all advertised tools alongside connection/server information; failures remain visible in the screen and activity logs. Missing or extra arguments exit 2; invalid URLs/non-interactive TUI launches exit 1; help/version exit 0. Terminal modes are restored on normal exit, startup/I/O failures, and panic.
 
-Initialization and full tool listing each have a 10-second deadline; cleanup is bounded to 2 seconds. There is no automatic retry or heartbeat; an idle stateless HTTP server can disappear without an immediate disconnect event. rmcp owns protocol and session handling.
+Initialization, full tool listing, and TUI calls each have a 10-second deadline; cleanup is bounded to 2 seconds. There is no automatic retry or heartbeat; an idle stateless HTTP server can disappear without an immediate disconnect event. rmcp owns protocol and session handling.
 
 ## Keys and screen
 
@@ -24,10 +24,17 @@ Initialization and full tool listing each have a 10-second deadline; cleanup is 
 - l toggles activity logs; G resumes following their tail after scrolling away.
 - r cancels old work and reconnects. Cached tools/metadata remain labeled offline after disconnect and clear when reconnect starts.
 - q quits with exit 0; Ctrl-C cancels and exits 130.
+- Enter from the Tools list/details opens a full-body argument editor. F5/Ctrl-Enter submits; Esc saves the draft and returns to browsing.
+- In the editor, arrows/Home/End move, Enter inserts a newline, Tab indents, Ctrl-R resets the schema skeleton, and Ctrl-U sets {}. Paste supports multiline text. Ordinary shortcuts including q/r/l/1/2 are text; Ctrl-C still exits.
+- Accepted submissions open a full-body result screen. Esc returns to browsing while a pending call continues; v reopens the latest result, and Enter from results edits that tool's draft. One call can be active; further submissions are rejected until it completes. Completion never changes the active screen.
 
 The Tools tab shows a tool list alongside the selected tool's full description and formatted inputSchema. Changing selection resets detail scrolling; catalog replacement retains selection by name when possible. The Server tab uses the full width for URL, connection state, identity/protocol, catalog count, full capabilities, instructions, and errors. Both detail views scroll independently.
 
-Narrow screens show the focused pane; short screens show focused logs in place of the body. Tiny screens show a resize hint while global controls remain active. TUI invocation/results and prompts/resources browsing are planned next; last-call latency displays — until TUI calls are implemented.
+Arguments must be a JSON object of at most 1 MiB. Invalid arguments stay in the editor with an explicit error and are never sent. The skeleton is an editable suggestion, not validation. Drafts are saved per tool; only the latest call result is retained. Reconnect clears drafts/results/metrics and cancels local pending work. Calls are never automatically retried; cancelling local work does not undo server-side effects.
+
+Results show all text blocks, formatted JSON, structuredContent when supplied, and labels for non-text/empty content. Only isError=true is a tool-content failure (TOOL ERROR in red); protocol/transport/timeout failures have an EXECUTION ERROR label. Tool details show dispatched-call counts and latest completion latency, including failures; status shows the latest call's state and latency.
+
+Narrow screens show the focused pane; short screens show focused logs in place of the body. The editor temporarily hides the activity drawer. Tiny screens show a resize hint while mode-specific controls remain active. Prompts/resources browsing remains planned.
 
 Colors inherit terminal defaults. Errors use red plus an ERROR label; if NO_COLOR is set, the label remains visible without color.
 

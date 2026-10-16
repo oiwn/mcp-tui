@@ -1,7 +1,7 @@
-# Current Task Context: schema json skeleton
+# Current Task Context: tool editor and results
 
-Active task: specs/tasks/0005-schema-json-skeleton.md
+Active task: specs/tasks/0006-tool-editor-and-results.md
 
 ## Next
 
-Await acceptance of task 0005; helper, unit tests, quality gates, and review are complete. Editor integration belongs to task 0006.
+Await acceptance of task 0006; implementation, quality gates, local real-server PTY checks, and review are complete.
