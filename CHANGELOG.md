@@ -9,6 +9,11 @@ Completed tasks, newest entry at the top, dated. `specdev task done` adds an ent
 - files touched / decisions locked
 -->
 
+## 2026-10-16 — terminal shell and status
+
+- Add a persistent MCP terminal screen with basic tool browsing, connection status, logs, and reliable cleanup.
+- Task `0003-terminal-shell-and-status`; source: User mcpv MVP brief; Rust 2024 and toolchain 1.99
+
 ## 2026-10-16 — server info and tool browser
 
 - Expose server information and a two-pane tool/schema browser.

@@ -1,6 +1,6 @@
 ---
 id: 0003-terminal-shell-and-status
-status: approval
+status: done
 scope: [src/terminal.rs, src/main.rs, src/app.rs, src/ui.rs, src/error.rs, README.md, Cargo.toml, Cargo.lock, tests/http_client.rs]
 created: 2026-10-13
 source: User mcpv MVP brief; Rust 2024 and toolchain 1.99
@@ -73,3 +73,5 @@ Approved against the plan. All 24 ordinary tests and cargo build --locked pass; 
 - 2026-10-14 advance in-progress/implement → in-progress/verify
 - 2026-10-14 advance in-progress/verify → in-progress/review
 - 2026-10-14 advance in-progress/review → approval
+- 2026-10-16 approved: let's close 0003
+- 2026-10-16 advance approval → done
