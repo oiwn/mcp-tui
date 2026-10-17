@@ -264,7 +264,7 @@ pub fn draw(frame: &mut Frame<'_>, screen: &mut Screen) {
             if screen.pending() {
                 "Call active | Esc browse | Ctrl-R reset | Ctrl-U {} | Ctrl-C quit".into()
             } else {
-                "F5/Ctrl-Enter send | Esc save/back | Ctrl-R reset | Ctrl-U {} | Ctrl-C quit".into()
+                "Ctrl+S send | Esc save/back | Ctrl-R reset | Ctrl-U {} | Ctrl-C quit".into()
             }
         }
         Mode::Result => format!(
@@ -735,9 +735,7 @@ mod tests {
         screen.logs_open = true;
         screen.open_editor("ping".into());
         let (text, _) = render(&mut screen, 100, 24)?;
-        assert!(
-            text.contains("Arguments: ping") && text.contains("F5/Ctrl-Enter")
-        );
+        assert!(text.contains("Arguments: ping") && text.contains("Ctrl+S send"));
         assert!(!text.contains("Return JSON") && !text.contains("Activity"));
         if let Some(editor) = &mut screen.editor {
             editor.replace("{".into());

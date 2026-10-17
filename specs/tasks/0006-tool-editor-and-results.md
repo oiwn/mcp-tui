@@ -12,7 +12,7 @@ depends: [0002-http-client-lifecycle, 0003-terminal-shell-and-status, 0004-serve
 
 - [x] Add full-body editor/result screens: Enter edits, Esc saves drafts/returns to browsing, v reopens the latest result, and Enter from results edits that tool. Retain per-tool drafts until reconnect/exit.
 - [x] Support Unicode-safe multiline editing, arrows/Home/End, Tab indentation, bracketed paste, visible cursor on scroll/resize, Ctrl-R skeleton reset, and Ctrl-U {}. Ordinary shortcut characters remain text; Ctrl-C exits.
-- [x] F5/Ctrl-Enter validates JSON object arguments up to 1 MiB and submits asynchronously; preserve invalid buffers with local errors. Enforce one active call without a submission queue and keep browsing/logs/reconnect/quit responsive.
+- [x] Ctrl+S submits (F5/Ctrl-Enter remain alternatives); validate JSON object arguments up to 1 MiB and preserve invalid buffers with local errors. Enforce one active call without a submission queue and keep browsing/logs/reconnect/quit responsive.
 - [x] Add typed call IDs and generation-tagged started/completed events with a configurable 10-second call deadline; cancel local work on reconnect/shutdown and reject stale/mismatched responses. Preserve headless contracts.
 - [x] Render ordered text blocks (pretty JSON or plain text), structuredContent, explicit empty/non-text labels, and safe terminal text. Label Some(true) tool-content failures red; distinguish execution failures and never retry automatically.
 - [x] Track dispatched counts and completion latency including failures; show selected-tool metrics and last-call status. Clear drafts/results/metrics on reconnect, test editor/results/worker behavior, update README, run gates, and verify the live PTY flow.
@@ -41,7 +41,7 @@ Call tools from a JSON editor and display results/failures with timing.
 
 ## Review
 
-Approved against the plan. All 60 ordinary tests pass; the intentional panic probe remains ignored. Reviewed draft/input handling, full-body rendering, terminal paste restoration, call identity/generation checks, the one-call permit, elapsed/count metrics, bounded cancellation, and unchanged headless behavior. Integration tests cover both session modes, content/protocol/transport failures, timeout recovery, duplicate rejection, and reconnect/shutdown while pending. Review corrected browser focus after results/reconnect and pending completion on unexpected worker-channel closure. No dependencies or unwrap/expect calls added. Warnings: the justified ten-file integration scope and existing future docs/demo.md.
+Approved against the plan. All 60 ordinary tests pass; the intentional panic probe remains ignored. Reviewed draft/input handling, full-body rendering, terminal paste restoration, call identity/generation checks, the one-call permit, elapsed/count metrics, bounded cancellation, and unchanged headless behavior. Integration tests cover both session modes, content/protocol/transport failures, timeout recovery, duplicate rejection, and reconnect/shutdown while pending. Review corrected browser focus after results/reconnect and pending completion on unexpected worker-channel closure. Ctrl+S is now primary; key tests retain F5/Ctrl-Enter, and a local fixture PTY confirmed the Ctrl+S footer and successful ping submission without freezing. No dependencies or unwrap/expect calls added. Warnings: the justified ten-file integration scope and existing future docs/demo.md.
 
 ## Log
 
@@ -62,5 +62,9 @@ Approved against the plan. All 60 ordinary tests pass; the intentional panic pro
 - 2026-10-16 scope approved: src/editor.rs, src/result.rs, src/app.rs, src/ui.rs, src/client.rs, src/error.rs, src/main.rs, src/terminal.rs, README.md, tests/http_client.rs
 - 2026-10-16 advance ready → in-progress/implement
 - 2026-10-16 advance in-progress/implement → in-progress/verify
+- 2026-10-16 advance in-progress/verify → in-progress/review
+- 2026-10-16 advance in-progress/review → approval
+- 2026-10-16 advance approval → in-progress/fix (revision)
+- 2026-10-16 advance in-progress/fix → in-progress/verify
 - 2026-10-16 advance in-progress/verify → in-progress/review
 - 2026-10-16 advance in-progress/review → approval

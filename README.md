@@ -24,7 +24,7 @@ Initialization, full tool listing, and TUI calls each have a 10-second deadline;
 - l toggles activity logs; G resumes following their tail after scrolling away.
 - r cancels old work and reconnects. Cached tools/metadata remain labeled offline after disconnect and clear when reconnect starts.
 - q quits with exit 0; Ctrl-C cancels and exits 130.
-- Enter from the Tools list/details opens a full-body argument editor. F5/Ctrl-Enter submits; Esc saves the draft and returns to browsing.
+- Enter from the Tools list/details opens a full-body argument editor. Ctrl+S submits; F5/Ctrl-Enter are alternatives. Esc saves the draft and returns to browsing. Plain Enter inserts a newline.
 - In the editor, arrows/Home/End move, Enter inserts a newline, Tab indents, Ctrl-R resets the schema skeleton, and Ctrl-U sets {}. Paste supports multiline text. Ordinary shortcuts including q/r/l/1/2 are text; Ctrl-C still exits.
 - Accepted submissions open a full-body result screen. Esc returns to browsing while a pending call continues; v reopens the latest result, and Enter from results edits that tool's draft. One call can be active; further submissions are rejected until it completes. Completion never changes the active screen.
 

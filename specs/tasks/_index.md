@@ -9,6 +9,7 @@
 
 - **0007-prompts-and-resources-tabs** — draft — prompts and resources tabs (User mcpv MVP brief; Rust 2024 and toolchain 1.99)
 - **0008-real-server-demo-and-quality** — draft — real server demo and quality (User mcpv MVP brief; Rust 2024 and toolchain 1.99)
+- **0011-server-authentication** — draft — server authentication (User: support connecting to MCP servers with authentication; add as task)
 
 ## Done
 

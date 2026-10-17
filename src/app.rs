@@ -530,6 +530,11 @@ fn key_action(screen: &mut Screen, key: KeyEvent) -> Action {
     }
     if screen.mode == Mode::Editor {
         match key.code {
+            KeyCode::Char('s')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                return Action::Submit;
+            }
             KeyCode::F(5) => return Action::Submit,
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 return Action::Submit;
@@ -963,6 +968,13 @@ mod tests {
             key_action(
                 &mut screen,
                 KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE)
+            ),
+            Action::Submit
+        ));
+        assert!(matches!(
+            key_action(
+                &mut screen,
+                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)
             ),
             Action::Submit
         ));

@@ -13,4 +13,6 @@ Build the mcpv MVP through these draft tasks in dependency order. Each is a revi
 
 ## Later
 
-No further features committed. Auth, stdio, multiple servers, config files, and server-state editing remain outside the MVP.
+- 0011-server-authentication — connect to authenticated MCP servers; choose token/API-key or OAuth scope during draft planning.
+
+Authentication is queued beyond the original MVP. Stdio, multiple servers, config files, and server-state editing remain outside its scope.

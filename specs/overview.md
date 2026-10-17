@@ -22,7 +22,7 @@ mcpv replaces the abandoned redb-tui project. It inspects and drives one running
 
 - Server info: name, version, negotiated protocol version, capabilities, and tool count.
 - Left tools pane: every tool name and one-line description. Right pane: full description and pretty JSON inputSchema, scrollable.
-- Enter opens an editable JSON buffer with a schema skeleton or {}. Ctrl-Enter/F5 submits; invalid JSON is rejected with the parse error. Esc cancels.
+- Enter opens an editable JSON buffer with a schema skeleton or {}. Ctrl+S submits (F5/Ctrl-Enter are alternatives); invalid JSON is rejected with the parse error. Esc saves the draft and returns to browsing.
 - Arrows and j/k/g/G navigate lists/read-only panes. Editor mode preserves those characters as input.
 - Render response text, pretty-printed when valid JSON. Some(true) is_error means failure: red with an explicit label. None/Some(false) mean no tool failure.
 - Status: connection state, last call latency, URL. l toggles a bounded scrollable log; connection failures never panic.
@@ -32,7 +32,7 @@ mcpv replaces the abandoned redb-tui project. It inspects and drives one running
 
 - Stateless servers need no Mcp-Session-Id; rmcp owns session handling. After killing an idle stateless server, trigger a request to observe failure; passive disconnect detection is not guaranteed.
 - Tool-content failures are distinct from protocol/transport errors and must remain visible without a crash.
-- F5 covers terminals that cannot distinguish Ctrl-Enter. Skeletons are suggestions, not schema validation.
+- Ctrl+S is the primary submit key; F5 remains an alternative for terminals that cannot distinguish Ctrl-Enter. Skeletons are suggestions, not schema validation.
 - Agent skill: .agents/skills/mcpv/SKILL.md. Headless JSON envelopes preserve native SDK data; tool-content failures exit 3 on stdout, execution errors use stderr. Input is capped at 1 MiB; stdin uses a separate reader thread so interruption cannot stall Tokio shutdown.
 - Agent/live-server test target: https://exodata.space/mcp. Automated tests stay local; public-endpoint smoke checks are opt-in. Inspect actual schemas before selecting read-only calls.
 - Acceptance requires a real-server demo: connect, info, tools, schema, call {}, success, rejected arguments in red, stop/request failure, restart/r reconnect, plus stateless operation.
